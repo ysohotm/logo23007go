@@ -53,6 +53,7 @@ const NAV_ITEMS = [
   { href: 'ipguard.html', label: '访问限制' },
   { href: 'blocked.html', label: '拦截记录' },
   { href: 'traffic.html', label: '访问分析' },
+  { href: 'system.html', label: '系统' },
   { href: 'covers.html', label: '封面图片池' },
   { href: 'account.html', label: '账号' }
 ];

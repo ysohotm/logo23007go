@@ -17,6 +17,7 @@ var adminFiles = map[string]string{
 	"blocked.html": "static/blocked.html",
 	"traffic.html": "static/traffic.html",
 	"covers.html":  "static/covers.html",
+	"system.html":  "static/system.html",
 	"account.html": "static/account.html",
 	"common.css":   "static/common.css",
 	"common.js":    "static/common.js",

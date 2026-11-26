@@ -21,6 +21,7 @@ import (
 	"logo23007go/internal/handlers"
 	"logo23007go/internal/ipguard"
 	"logo23007go/internal/logo"
+	"logo23007go/internal/sysmetrics"
 )
 
 const defaultBgCacheSizes = "300x400,600x800,240x300,150x210"
@@ -153,7 +154,7 @@ func main() {
 	mux.Handle("GET /static/", http.StripPrefix("/static/", fs))
 
 	keywordStore := &db.CoverKeywordStore{Coll: ctrlDB.Collection("cover_keywords")}
-	adminAPI := &admin.API{Auth: authStore, Guard: guard, CoverPool: poolConfig, Keywords: keywordStore, Pool: pool}
+	adminAPI := &admin.API{Auth: authStore, Guard: guard, CoverPool: poolConfig, Keywords: keywordStore, Pool: pool, Sys: sysmetrics.New()}
 	if pool != nil {
 		adminAPI.Prewarm = &coverpool.Prewarmer{
 			Config:    poolConfig,

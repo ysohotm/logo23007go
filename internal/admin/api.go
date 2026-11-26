@@ -12,6 +12,7 @@ import (
 
 	"logo23007go/internal/coverpool"
 	"logo23007go/internal/ipguard"
+	"logo23007go/internal/sysmetrics"
 )
 
 const sessionTTL = 7 * 24 * time.Hour
@@ -29,6 +30,7 @@ type API struct {
 	Prewarm   *coverpool.Prewarmer
 	Keywords  CoverKeywordRegistry
 	Pool      *coverpool.Pool
+	Sys       *sysmetrics.Collector
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -89,6 +91,7 @@ func (a *API) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/cover-pool", a.handlePutCoverPool)
 	mux.HandleFunc("POST /api/cover-pool/generate", a.handleGenerateCoverPool)
 	mux.HandleFunc("GET /api/cover-pool/keywords", a.handleListCoverKeywords)
+	mux.HandleFunc("GET /api/system/stats", a.handleSystemStats)
 	mux.HandleFunc("GET /api/ipguard/stats", a.handleStats)
 	mux.HandleFunc("POST /api/ipguard/stats/reset", a.handleStatsReset)
 	mux.HandleFunc("GET /api/ipguard/check", a.handleCheck)
@@ -365,6 +368,22 @@ func (a *API) handleListCoverKeywords(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "keywords": statuses})
 }
 
+func (a *API) handleSystemStats(w http.ResponseWriter, r *http.Request) {
+	if !a.authed(w, r) {
+		return
+	}
+	if a.Sys == nil {
+		writeErr(w, http.StatusServiceUnavailable, "系统状态暂不可用")
+		return
+	}
+	snap, err := a.Sys.Sample()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "stats": snap})
+}
+
 func (a *API) handleStats(w http.ResponseWriter, r *http.Request) {
 	if !a.authed(w, r) {
 		return
@@ -436,3 +455,4 @@ func (a *API) handleCheck(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, a.Guard.Decide(r))
 }
+

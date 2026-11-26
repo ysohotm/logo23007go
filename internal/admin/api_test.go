@@ -12,6 +12,7 @@ import (
 
 	"logo23007go/internal/coverpool"
 	"logo23007go/internal/ipguard"
+	"logo23007go/internal/sysmetrics"
 )
 
 type fakeCoverPoolStore struct {
@@ -610,9 +611,47 @@ func TestCoverPoolKeywordsList(t *testing.T) {
 	}
 }
 
+func TestSystemStats(t *testing.T) {
+	mux := http.NewServeMux()
+	a := &API{
+		Auth: &fakeAuth{sessions: map[string]bool{}},
+		Sys:  sysmetrics.New(),
+	}
+	a.Mount(mux)
+
+	if code, _ := do(t, mux, "GET", "/api/system/stats", "", nil); code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated system stats should be 401, got %d", code)
+	}
+	tok := setupToken(t, mux)
+	code, out := do(t, mux, "GET", "/api/system/stats", tok, nil)
+	if code != http.StatusOK || out["ok"] != true {
+		t.Fatalf("system stats: %d %v", code, out)
+	}
+	stats, _ := out["stats"].(map[string]any)
+	if stats == nil || stats["mem_total_bytes"] == nil {
+		t.Fatalf("stats missing mem_total_bytes: %v", out)
+	}
+	code, out = do(t, mux, "GET", "/api/system/stats", tok, nil)
+	if code != http.StatusOK {
+		t.Fatalf("second sample: %d %v", code, out)
+	}
+	stats, _ = out["stats"].(map[string]any)
+	if stats["cpu_percent"] == nil {
+		t.Fatalf("second sample should include cpu_percent: %v", stats)
+	}
+
+	muxNil := http.NewServeMux()
+	aNil := &API{Auth: &fakeAuth{sessions: map[string]bool{}}}
+	aNil.Mount(muxNil)
+	tok2 := setupToken(t, muxNil)
+	if code, out := do(t, muxNil, "GET", "/api/system/stats", tok2, nil); code != http.StatusServiceUnavailable || out["error"] == nil {
+		t.Fatalf("nil Sys should 503: %d %v", code, out)
+	}
+}
+
 func TestServeUI(t *testing.T) {
 	mux := newTestMux()
-	for _, p := range []string{"/ytmadmin/", "/ytmadmin/ipguard.html", "/ytmadmin/blocked.html", "/ytmadmin/covers.html", "/ytmadmin/account.html", "/ytmadmin/common.css", "/ytmadmin/common.js"} {
+	for _, p := range []string{"/ytmadmin/", "/ytmadmin/ipguard.html", "/ytmadmin/blocked.html", "/ytmadmin/covers.html", "/ytmadmin/system.html", "/ytmadmin/account.html", "/ytmadmin/common.css", "/ytmadmin/common.js"} {
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, httptest.NewRequest("GET", p, nil))
 		if w.Code != 200 || w.Body.Len() == 0 {
