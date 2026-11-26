@@ -414,6 +414,86 @@ func TestCoverPoolConfigUnavailable(t *testing.T) {
 			t.Fatalf("%s unavailable cover pool: %d %v, want 503", method, code, out)
 		}
 	}
+	if code, out := do(t, mux, "POST", "/api/cover-pool/generate", tok, map[string]any{"keywords": []string{"词"}}); code != http.StatusServiceUnavailable {
+		t.Fatalf("generate unavailable cover pool: %d %v, want 503", code, out)
+	}
+}
+
+type stubCoverGen struct {
+	pool *coverpool.Pool
+}
+
+var testCoverWebP = []byte{'R', 'I', 'F', 'F', 4, 0, 0, 0, 'W', 'E', 'B', 'P', 'V', 'P', '8', ' '}
+
+func (g *stubCoverGen) Generate(_ context.Context, spec coverpool.Spec, slot int) error {
+	return g.pool.Put(spec, slot, testCoverWebP)
+}
+
+func TestCoverPoolGenerate(t *testing.T) {
+	muxUnauth := newTestMux()
+	if code, _ := do(t, muxUnauth, "POST", "/api/cover-pool/generate", "", map[string]any{"keywords": []string{"词"}}); code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated generate should be 401, got %d", code)
+	}
+
+	muxNoPrewarm := http.NewServeMux()
+	aNoPrewarm := &API{
+		Auth:      &fakeAuth{sessions: map[string]bool{}},
+		CoverPool: coverpool.NewConfig(&fakeCoverPoolStore{}, nil),
+	}
+	aNoPrewarm.Mount(muxNoPrewarm)
+	tokNoPrewarm := setupToken(t, muxNoPrewarm)
+	if code, out := do(t, muxNoPrewarm, "POST", "/api/cover-pool/generate", tokNoPrewarm, map[string]any{"keywords": []string{"词"}}); code != http.StatusServiceUnavailable {
+		t.Fatalf("CoverPool without Prewarm should 503: %d %v", code, out)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	pool := coverpool.NewPool(t.TempDir())
+	store := &fakeCoverPoolStore{}
+	cfg := coverpool.NewConfig(store, nil)
+	if err := cfg.Set(ctx, coverpool.Settings{Count: 3, Sizes: [][2]int{{600, 800}}}); err != nil {
+		t.Fatal(err)
+	}
+	gen := &stubCoverGen{pool: pool}
+	scheduler := coverpool.NewScheduler(ctx, pool, 1, 8, gen, nil)
+	defer func() {
+		cancel()
+		scheduler.Wait()
+	}()
+	mux := http.NewServeMux()
+	a := &API{
+		Auth:      &fakeAuth{sessions: map[string]bool{}},
+		CoverPool: cfg,
+		Prewarm: &coverpool.Prewarmer{
+			Config:    cfg,
+			Pool:      pool,
+			Scheduler: scheduler,
+			Generate:  gen,
+		},
+	}
+	a.Mount(mux)
+	tok := setupToken(t, mux)
+
+	if code, out := do(t, mux, "POST", "/api/cover-pool/generate", tok, map[string]any{"keywords": []string{}}); code != http.StatusBadRequest {
+		t.Fatalf("empty keywords should 400: %d %v", code, out)
+	}
+	if code, out := do(t, mux, "POST", "/api/cover-pool/generate", tok, map[string]any{"keywords": []string{"  ", ""}}); code != http.StatusBadRequest {
+		t.Fatalf("whitespace-only keywords should 400: %d %v", code, out)
+	}
+
+	code, out := do(t, mux, "POST", "/api/cover-pool/generate", tok, map[string]any{
+		"keywords": []string{"词A", "词A", "  "},
+	})
+	if code != http.StatusOK || out["ok"] != true {
+		t.Fatalf("generate: %d %v", code, out)
+	}
+	result, _ := out["result"].(map[string]any)
+	if result["keywords"] != float64(1) {
+		t.Fatalf("result.keywords = %v, want 1", result["keywords"])
+	}
+	accepted, _ := result["accepted"].(float64)
+	if accepted < 1 {
+		t.Fatalf("result.accepted = %v, want >= 1", accepted)
+	}
 }
 
 func TestServeUI(t *testing.T) {

@@ -19,6 +19,7 @@ type API struct {
 	Auth      AuthStore
 	Guard     *ipguard.Guard
 	CoverPool *coverpool.Config
+	Prewarm   *coverpool.Prewarmer
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -77,6 +78,7 @@ func (a *API) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/ipguard", a.handlePutConfig)
 	mux.HandleFunc("GET /api/cover-pool", a.handleGetCoverPool)
 	mux.HandleFunc("PUT /api/cover-pool", a.handlePutCoverPool)
+	mux.HandleFunc("POST /api/cover-pool/generate", a.handleGenerateCoverPool)
 	mux.HandleFunc("GET /api/ipguard/stats", a.handleStats)
 	mux.HandleFunc("POST /api/ipguard/stats/reset", a.handleStatsReset)
 	mux.HandleFunc("GET /api/ipguard/check", a.handleCheck)
@@ -301,6 +303,28 @@ func writeCoverPoolConfig(w http.ResponseWriter, settings coverpool.Settings) {
 			"sizes": sizes,
 		},
 	})
+}
+
+func (a *API) handleGenerateCoverPool(w http.ResponseWriter, r *http.Request) {
+	if !a.authed(w, r) {
+		return
+	}
+	if a.Prewarm == nil || a.CoverPool == nil {
+		writeErr(w, http.StatusServiceUnavailable, "关键词图片池暂不可用")
+		return
+	}
+	var body struct {
+		Keywords []string `json:"keywords"`
+	}
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	if len(coverpool.NormalizeKeywords(body.Keywords)) == 0 {
+		writeErr(w, http.StatusBadRequest, "请至少填写一个关键词")
+		return
+	}
+	result := a.Prewarm.Enqueue(r.Context(), body.Keywords)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "result": result})
 }
 
 func (a *API) handleStats(w http.ResponseWriter, r *http.Request) {

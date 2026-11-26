@@ -35,12 +35,23 @@
     </form>
 
     <div class="card" style="max-width:640px">
+      <h2>手工添加关键词</h2>
+      <p class="muted" style="margin:0 0 20px">固定输出 WebP；按上方已保存的尺寸白名单，为每个关键词后台补齐到配置数量。可多种尺寸。</p>
+      <label for="keywords">关键词</label>
+      <textarea id="keywords" placeholder="每行一个关键词"></textarea>
+      <div class="row actions">
+        <button id="btnGenerate" type="button">生成备用图片</button>
+      </div>
+    </div>
+
+    <div class="card" style="max-width:640px">
       <h2>使用说明</h2>
       <ul class="notes muted">
         <li>只有白名单尺寸会建池：首图立即返回，其余后台补齐后随机。</li>
         <li>未在列表中的尺寸不预生成、不随机，每次实时出图。</li>
         <li>减小数量或删掉某个尺寸，不删除已生成的历史文件。</li>
         <li>Cloudflare 缓存命中期间直接返回已缓存图片，不会重新随机。</li>
+        <li>手工添加固定 WebP，尺寸以本页已保存白名单为准。</li>
       </ul>
     </div>
   </div>
@@ -55,6 +66,13 @@
     function parseSizes(text) {
       return String(text || '')
         .split(/[\n,]+/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+    }
+
+    function parseKeywords(text) {
+      return String(text || '')
+        .split('\n')
         .map((s) => s.trim())
         .filter(Boolean);
     }
@@ -85,6 +103,24 @@
         toast(err.message, false);
       } finally {
         $('btnSave').disabled = false;
+      }
+    };
+
+    $('btnGenerate').onclick = async () => {
+      const keywords = parseKeywords($('keywords').value);
+      if (!keywords.length) {
+        toast('请至少填写一个关键词', false);
+        return;
+      }
+      $('btnGenerate').disabled = true;
+      try {
+        const data = await api('POST', '/api/cover-pool/generate', { keywords });
+        const r = data.result || {};
+        toast(`已入队 ${r.accepted || 0}，跳过 ${r.skipped || 0}，失败 ${r.failed || 0}`, true);
+      } catch (err) {
+        toast(err.message, false);
+      } finally {
+        $('btnGenerate').disabled = false;
       }
     };
 

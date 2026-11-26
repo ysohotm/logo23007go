@@ -152,7 +152,16 @@ func main() {
 	fs := http.FileServer(http.Dir(filepath.Join(root, "wwwroot")))
 	mux.Handle("GET /static/", http.StripPrefix("/static/", fs))
 
-	(&admin.API{Auth: authStore, Guard: guard, CoverPool: poolConfig}).Mount(mux)
+	adminAPI := &admin.API{Auth: authStore, Guard: guard, CoverPool: poolConfig}
+	if pool != nil {
+		adminAPI.Prewarm = &coverpool.Prewarmer{
+			Config:    poolConfig,
+			Pool:      pool,
+			Scheduler: h.PoolScheduler,
+			Generate:  h,
+		}
+	}
+	adminAPI.Mount(mux)
 	admin.MountUI(mux)
 
 	go memoryMonitor(logger, siteDB)
