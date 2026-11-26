@@ -611,6 +611,88 @@ func TestCoverPoolKeywordsList(t *testing.T) {
 	}
 }
 
+func TestCoverSizeStats(t *testing.T) {
+	muxUnauth := newTestMux()
+	if code, _ := do(t, muxUnauth, "GET", "/api/cover-pool/size-stats", "", nil); code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated size-stats should be 401, got %d", code)
+	}
+	if code, _ := do(t, muxUnauth, "POST", "/api/cover-pool/size-stats/reset", "", nil); code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated size-stats reset should be 401, got %d", code)
+	}
+
+	ctx := context.Background()
+	store := &fakeCoverPoolStore{}
+	cfg := coverpool.NewConfig(store, nil)
+	if err := cfg.Set(ctx, coverpool.Settings{Count: 10, Sizes: [][2]int{{600, 800}}}); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	a := &API{
+		Auth:      &fakeAuth{sessions: map[string]bool{}},
+		CoverPool: cfg,
+		SizeStats: coverpool.NewSizeStats(),
+	}
+	a.Mount(mux)
+	tok := setupToken(t, mux)
+
+	code, out := do(t, mux, "GET", "/api/cover-pool/size-stats", tok, nil)
+	if code != http.StatusOK || out["ok"] != true {
+		t.Fatalf("empty size-stats: %d %v", code, out)
+	}
+	if out["total"] != float64(0) {
+		t.Fatalf("total = %v, want 0", out["total"])
+	}
+	sizes, _ := out["sizes"].([]any)
+	if len(sizes) != 0 {
+		t.Fatalf("sizes = %v, want empty", sizes)
+	}
+	if since, _ := out["since"].(string); since == "" {
+		t.Fatalf("since should be set when SizeStats non-nil: %v", out)
+	}
+
+	a.SizeStats.Record(600, 800)
+	a.SizeStats.Record(600, 800)
+	a.SizeStats.Record(300, 400)
+
+	code, out = do(t, mux, "GET", "/api/cover-pool/size-stats", tok, nil)
+	if code != http.StatusOK || out["ok"] != true {
+		t.Fatalf("size-stats after record: %d %v", code, out)
+	}
+	if out["total"] != float64(3) {
+		t.Fatalf("total = %v, want 3", out["total"])
+	}
+	sizes, _ = out["sizes"].([]any)
+	if len(sizes) != 2 {
+		t.Fatalf("sizes len = %d, want 2: %v", len(sizes), sizes)
+	}
+	top, _ := sizes[0].(map[string]any)
+	if top["w"] != float64(600) || top["h"] != float64(800) || top["count"] != float64(2) {
+		t.Fatalf("top size = %v, want 600x800 count=2", top)
+	}
+	if top["pooled"] != true {
+		t.Fatalf("600x800 pooled = %v, want true", top["pooled"])
+	}
+	other, _ := sizes[1].(map[string]any)
+	if other["w"] != float64(300) || other["h"] != float64(400) || other["count"] != float64(1) {
+		t.Fatalf("second size = %v, want 300x400 count=1", other)
+	}
+	if other["pooled"] != false {
+		t.Fatalf("300x400 pooled = %v, want false", other["pooled"])
+	}
+
+	if code, out := do(t, mux, "POST", "/api/cover-pool/size-stats/reset", tok, nil); code != http.StatusOK || out["ok"] != true {
+		t.Fatalf("reset: %d %v", code, out)
+	}
+	code, out = do(t, mux, "GET", "/api/cover-pool/size-stats", tok, nil)
+	if code != http.StatusOK || out["total"] != float64(0) {
+		t.Fatalf("after reset: %d %v", code, out)
+	}
+	sizes, _ = out["sizes"].([]any)
+	if len(sizes) != 0 {
+		t.Fatalf("after reset sizes = %v, want empty", sizes)
+	}
+}
+
 func TestSystemStats(t *testing.T) {
 	mux := http.NewServeMux()
 	a := &API{

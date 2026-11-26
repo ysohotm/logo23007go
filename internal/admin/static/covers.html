@@ -68,6 +68,17 @@
     </div>
 
     <div class="card" style="max-width:640px">
+      <h2>请求尺寸排行</h2>
+      <p class="muted" style="margin:0 0 12px">进程内统计，重启清零；显示是否已在白名单（pooled）</p>
+      <div class="row actions" style="margin-top:0; margin-bottom:12px; justify-content:flex-end">
+        <button id="btnRefreshSizeStats" type="button">刷新排行</button>
+        <button id="btnResetSizeStats" type="button">清零统计</button>
+      </div>
+      <div id="sizeStatsMeta" class="muted" style="margin-bottom:8px"></div>
+      <div id="sizeStatsList" class="kw-list"></div>
+    </div>
+
+    <div class="card" style="max-width:640px">
       <h2>使用说明</h2>
       <ul class="notes muted">
         <li>只有白名单尺寸会建池：首图立即返回，其余后台补齐后随机。</li>
@@ -182,10 +193,53 @@
       loadKeywords().catch((e) => toast(e.message, false));
     };
 
+    async function loadSizeStats() {
+      const list = $('sizeStatsList');
+      const meta = $('sizeStatsMeta');
+      try {
+        const data = await api('GET', '/api/cover-pool/size-stats');
+        const total = data.total || 0;
+        const sizes = data.sizes || [];
+        const since = data.since ? `自 ${data.since}` : '';
+        meta.textContent = `合计 ${total} 次${since ? ' · ' + since : ''}`;
+        if (!sizes.length) {
+          list.innerHTML = '<p class="muted" style="margin:0">暂无请求记录</p>';
+          return;
+        }
+        list.innerHTML = sizes.map((sz) => {
+          const count = sz.count || 0;
+          const pct = total > 0 ? ((count / total) * 100).toFixed(1) : '0.0';
+          const pooled = sz.pooled ? '是' : '否';
+          return `<div class="kw-row"><span class="kw-text">${sz.w}×${sz.h}</span><span class="kw-chips"><span class="kw-chip">${count} 次</span><span class="kw-chip">${pct}%</span><span class="kw-chip ${sz.pooled ? 'done' : 'todo'}">白名单 ${pooled}</span></span></div>`;
+        }).join('');
+      } catch (err) {
+        toast(err.message, false);
+      }
+    }
+
+    $('btnRefreshSizeStats').onclick = () => {
+      loadSizeStats().catch((e) => toast(e.message, false));
+    };
+
+    $('btnResetSizeStats').onclick = async () => {
+      if (!confirm('确认清零请求尺寸统计？')) return;
+      $('btnResetSizeStats').disabled = true;
+      try {
+        await api('POST', '/api/cover-pool/size-stats/reset');
+        toast('已清零', true);
+        await loadSizeStats();
+      } catch (err) {
+        toast(err.message, false);
+      } finally {
+        $('btnResetSizeStats').disabled = false;
+      }
+    };
+
     if (requireToken()) {
       renderNav('covers.html');
       load().catch(e => toast(e.message, false));
       loadKeywords().catch(e => toast(e.message, false));
+      loadSizeStats().catch(e => toast(e.message, false));
     }
   </script>
 </body>

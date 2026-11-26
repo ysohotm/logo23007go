@@ -52,6 +52,7 @@ type Home struct {
 	Pool          *coverpool.Pool
 	PoolConfig    *coverpool.Config
 	PoolScheduler *coverpool.Scheduler
+	SizeStats     *coverpool.SizeStats
 
 	busyCount atomic.Int64
 	busyLogAt atomic.Int64
@@ -212,6 +213,7 @@ func (h *Home) ImageKey(w http.ResponseWriter, r *http.Request) {
 
 	text, _ := obj["key"].(string)
 	width, height = normalizeSize(width, height)
+	h.SizeStats.Record(width, height)
 	if h.poolEnabled() {
 		if _, cached := h.servePoolHit(w, text, width, height, file, format); cached {
 			return
@@ -255,6 +257,7 @@ func (h *Home) Image(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	h.SizeStats.Record(width, height)
 	format := negotiateImageFormat(r.Header.Get("Accept"))
 	if h.poolEnabled() {
 		if _, cached := h.servePoolHit(w, text, width, height, file, format); cached {

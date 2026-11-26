@@ -31,6 +31,7 @@ type API struct {
 	Keywords  CoverKeywordRegistry
 	Pool      *coverpool.Pool
 	Sys       *sysmetrics.Collector
+	SizeStats *coverpool.SizeStats
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -91,6 +92,8 @@ func (a *API) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /api/cover-pool", a.handlePutCoverPool)
 	mux.HandleFunc("POST /api/cover-pool/generate", a.handleGenerateCoverPool)
 	mux.HandleFunc("GET /api/cover-pool/keywords", a.handleListCoverKeywords)
+	mux.HandleFunc("GET /api/cover-pool/size-stats", a.handleCoverSizeStats)
+	mux.HandleFunc("POST /api/cover-pool/size-stats/reset", a.handleCoverSizeStatsReset)
 	mux.HandleFunc("GET /api/system/stats", a.handleSystemStats)
 	mux.HandleFunc("GET /api/ipguard/stats", a.handleStats)
 	mux.HandleFunc("POST /api/ipguard/stats/reset", a.handleStatsReset)
@@ -366,6 +369,44 @@ func (a *API) handleListCoverKeywords(w http.ResponseWriter, r *http.Request) {
 	}
 	statuses := coverpool.StatusFor(a.Pool, a.CoverPool, texts)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "keywords": statuses})
+}
+
+func (a *API) handleCoverSizeStats(w http.ResponseWriter, r *http.Request) {
+	if !a.authed(w, r) {
+		return
+	}
+	total, items := a.SizeStats.Snapshot()
+	since := ""
+	if a.SizeStats != nil {
+		since = a.SizeStats.StartedAt().UTC().Format(time.RFC3339)
+	}
+	sizes := make([]map[string]any, 0, len(items))
+	for _, it := range items {
+		pooled := false
+		if a.CoverPool != nil {
+			pooled = a.CoverPool.Allows(it.Width, it.Height)
+		}
+		sizes = append(sizes, map[string]any{
+			"w":      it.Width,
+			"h":      it.Height,
+			"count":  it.Count,
+			"pooled": pooled,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":    true,
+		"total": total,
+		"since": since,
+		"sizes": sizes,
+	})
+}
+
+func (a *API) handleCoverSizeStatsReset(w http.ResponseWriter, r *http.Request) {
+	if !a.authed(w, r) {
+		return
+	}
+	a.SizeStats.Reset()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (a *API) handleSystemStats(w http.ResponseWriter, r *http.Request) {

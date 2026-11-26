@@ -116,6 +116,7 @@ func main() {
 		}
 		pool = coverpool.NewPool(poolDir)
 	}
+	sizeStats := coverpool.NewSizeStats()
 	h := &handlers.Home{
 		Logger:     logger,
 		Root:       root,
@@ -125,6 +126,7 @@ func main() {
 		ImageWait:  envDuration("IMAGE_WAIT", 0),
 		Pool:       pool,
 		PoolConfig: poolConfig,
+		SizeStats:  sizeStats,
 	}
 	var poolCancel context.CancelFunc
 	if pool != nil {
@@ -154,7 +156,7 @@ func main() {
 	mux.Handle("GET /static/", http.StripPrefix("/static/", fs))
 
 	keywordStore := &db.CoverKeywordStore{Coll: ctrlDB.Collection("cover_keywords")}
-	adminAPI := &admin.API{Auth: authStore, Guard: guard, CoverPool: poolConfig, Keywords: keywordStore, Pool: pool, Sys: sysmetrics.New()}
+	adminAPI := &admin.API{Auth: authStore, Guard: guard, CoverPool: poolConfig, Keywords: keywordStore, Pool: pool, Sys: sysmetrics.New(), SizeStats: sizeStats}
 	if pool != nil {
 		adminAPI.Prewarm = &coverpool.Prewarmer{
 			Config:    poolConfig,
