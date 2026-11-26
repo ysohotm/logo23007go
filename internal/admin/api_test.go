@@ -1,0 +1,421 @@
+package admin
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"logo23007go/internal/coverpool"
+	"logo23007go/internal/ipguard"
+)
+
+type fakeCoverPoolStore struct {
+	count int
+}
+
+func (f *fakeCoverPoolStore) Get(context.Context) (int, error) { return f.count, nil }
+func (f *fakeCoverPoolStore) Set(_ context.Context, count int) error {
+	f.count = count
+	return nil
+}
+
+type fakeAuth struct {
+	user, pass string
+	sessions   map[string]bool
+}
+
+func (f *fakeAuth) HasAdmin(context.Context) (bool, error) { return f.user != "", nil }
+func (f *fakeAuth) CreateAdmin(_ context.Context, u, p string) error {
+	if f.user != "" {
+		return ErrAdminExists
+	}
+	u, err := validateCredentials(u, p)
+	if err != nil {
+		return err
+	}
+	f.user, f.pass = u, p
+	return nil
+}
+func (f *fakeAuth) VerifyAdmin(_ context.Context, u, p string) (bool, error) {
+	return f.user != "" && u == f.user && p == f.pass, nil
+}
+func (f *fakeAuth) UpdateAdmin(_ context.Context, u, p string) error {
+	u, err := validateCredentials(u, p)
+	if err != nil {
+		return err
+	}
+	f.user, f.pass = u, p
+	f.sessions = map[string]bool{}
+	return nil
+}
+func (f *fakeAuth) AdminUsername(context.Context) (string, error) { return f.user, nil }
+func (f *fakeAuth) CreateSession(context.Context, time.Duration) (string, error) {
+	tok, _ := newToken()
+	f.sessions[tok] = true
+	return tok, nil
+}
+func (f *fakeAuth) ValidSession(_ context.Context, t string) (bool, error) { return f.sessions[t], nil }
+func (f *fakeAuth) DeleteSession(_ context.Context, t string) error {
+	delete(f.sessions, t)
+	return nil
+}
+
+func newTestMux() *http.ServeMux {
+	_, mux := newTestAPI()
+	return mux
+}
+
+func newTestAPI() (*API, *http.ServeMux) {
+	mux := http.NewServeMux()
+	a := &API{Auth: &fakeAuth{sessions: map[string]bool{}}, Guard: ipguard.New(nil, nil)}
+	a.Mount(mux)
+	MountUI(mux)
+	return a, mux
+}
+
+func setupToken(t *testing.T, mux *http.ServeMux) string {
+	t.Helper()
+	code, out := do(t, mux, "POST", "/api/auth/setup", "", credentials{"admin", "secret1"})
+	if code != 200 {
+		t.Fatalf("setup: %d %v", code, out)
+	}
+	return out["token"].(string)
+}
+
+// hitGuard 以 remote 为对端地址经过 Guard.Middleware 发 n 次请求，返回各状态码。
+func hitGuard(a *API, remote string, n int) []int {
+	h := a.Guard.Middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}), nil)
+	codes := make([]int, n)
+	for i := range codes {
+		r := httptest.NewRequest("GET", "/vod/x", nil)
+		r.RemoteAddr = remote
+		r.Header.Set("User-Agent", "Mozilla/5.0 test")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		codes[i] = w.Code
+	}
+	return codes
+}
+
+func findGroup(t *testing.T, out map[string]any, subnet string) map[string]any {
+	t.Helper()
+	recent, _ := out["recent"].(map[string]any)
+	groups, _ := recent["groups"].([]any)
+	for _, g := range groups {
+		if m, _ := g.(map[string]any); m["subnet"] == subnet {
+			return m
+		}
+	}
+	return nil
+}
+
+// sumTotal 返回 minutes 中 total 之和与最后一个 total。
+func sumTotal(t *testing.T, out map[string]any) (sum, last float64, n int) {
+	t.Helper()
+	ms, ok := out["minutes"].([]any)
+	if !ok {
+		t.Fatalf("minutes missing: %v", out)
+	}
+	for _, m := range ms {
+		last = m.(map[string]any)["total"].(float64)
+		sum += last
+	}
+	return sum, last, len(ms)
+}
+
+func do(t *testing.T, mux *http.ServeMux, method, path, token string, body any) (int, map[string]any) {
+	t.Helper()
+	var buf bytes.Buffer
+	if body != nil {
+		_ = json.NewEncoder(&buf).Encode(body)
+	}
+	r := httptest.NewRequest(method, path, &buf)
+	if token != "" {
+		r.Header.Set("X-Session-Token", token)
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	var out map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &out)
+	return w.Code, out
+}
+
+func TestAuthFlowAndConfig(t *testing.T) {
+	mux := newTestMux()
+
+	if code, out := do(t, mux, "GET", "/api/auth/status", "", nil); code != 200 || out["setup_required"] != true {
+		t.Fatalf("status: %d %v", code, out)
+	}
+	if code, _ := do(t, mux, "GET", "/api/ipguard", "", nil); code != 401 {
+		t.Fatalf("unauthenticated config should be 401, got %d", code)
+	}
+	code, out := do(t, mux, "POST", "/api/auth/setup", "", credentials{"admin", "secret1"})
+	if code != 200 {
+		t.Fatalf("setup: %d %v", code, out)
+	}
+	tok := out["token"].(string)
+	if code, _ := do(t, mux, "POST", "/api/auth/setup", "", credentials{"x", "secret1"}); code != 409 {
+		t.Fatalf("second setup should 409, got %d", code)
+	}
+	if code, _ := do(t, mux, "POST", "/api/auth/login", "", credentials{"admin", "wrong!!"}); code != 401 {
+		t.Fatalf("bad login should 401, got %d", code)
+	}
+
+	code, out = do(t, mux, "GET", "/api/ipguard", tok, nil)
+	if code != 200 || out["config"] == nil || out["defaults"] == nil {
+		t.Fatalf("get config: %d %v", code, out)
+	}
+
+	code, out = do(t, mux, "PUT", "/api/ipguard", tok, ipguard.Config{Enabled: true, Countries: []string{"bad"}})
+	if code != 400 || !strings.Contains(out["error"].(string), "国家码") {
+		t.Fatalf("invalid config should 400: %d %v", code, out)
+	}
+	code, out = do(t, mux, "PUT", "/api/ipguard", tok, ipguard.Config{Enabled: true, Countries: []string{"jp"}, IPs: []string{"1.1.1.1"}})
+	if code != 200 {
+		t.Fatalf("put config: %d %v", code, out)
+	}
+	cfg := out["config"].(map[string]any)
+	if cfg["countries"].([]any)[0] != "JP" {
+		t.Fatalf("countries not normalized: %v", cfg)
+	}
+
+	if code, _ := do(t, mux, "GET", "/api/ipguard/stats", tok, nil); code != 200 {
+		t.Fatalf("stats: %d", code)
+	}
+	if code, out := do(t, mux, "GET", "/api/ipguard/check", tok, nil); code != 200 || out["ip"] == nil {
+		t.Fatalf("check: %d %v", code, out)
+	}
+
+	do(t, mux, "POST", "/api/auth/logout", tok, nil)
+	if code, _ := do(t, mux, "GET", "/api/ipguard", tok, nil); code != 401 {
+		t.Fatalf("after logout should 401, got %d", code)
+	}
+}
+
+func TestChangeCredentials(t *testing.T) {
+	mux := newTestMux()
+	_, out := do(t, mux, "POST", "/api/auth/setup", "", credentials{"admin", "secret1"})
+	tok := out["token"].(string)
+
+	if code, out := do(t, mux, "GET", "/api/auth/me", tok, nil); code != 200 || out["username"] != "admin" {
+		t.Fatalf("me: %d %v", code, out)
+	}
+	type change struct {
+		OldPassword string `json:"old_password"`
+		Username    string `json:"username"`
+		Password    string `json:"password"`
+	}
+	if code, _ := do(t, mux, "POST", "/api/auth/change", tok, change{"wrong!!", "boss", "newpass1"}); code != 403 {
+		t.Fatalf("wrong old password should 403, got %d", code)
+	}
+	if code, _ := do(t, mux, "POST", "/api/auth/change", tok, change{"secret1", "boss", "123"}); code != 400 {
+		t.Fatalf("short password should 400, got %d", code)
+	}
+	code, out := do(t, mux, "POST", "/api/auth/change", tok, change{"secret1", "boss", "newpass1"})
+	if code != 200 {
+		t.Fatalf("change: %d %v", code, out)
+	}
+	newTok := out["token"].(string)
+	if code, _ := do(t, mux, "GET", "/api/ipguard", tok, nil); code != 401 {
+		t.Fatalf("old session should be revoked, got %d", code)
+	}
+	if code, _ := do(t, mux, "GET", "/api/ipguard", newTok, nil); code != 200 {
+		t.Fatalf("new session should work, got %d", code)
+	}
+	if code, _ := do(t, mux, "POST", "/api/auth/login", "", credentials{"boss", "newpass1"}); code != 200 {
+		t.Fatalf("login with new credentials failed: %d", code)
+	}
+
+	code, out = do(t, mux, "POST", "/api/auth/change", newTok, change{"newpass1", "", "another1"})
+	if code != 200 || out["username"] != "boss" {
+		t.Fatalf("password-only change should keep username: %d %v", code, out)
+	}
+}
+
+func TestTrafficAndBlockRequireAuth(t *testing.T) {
+	mux := newTestMux()
+	if code, _ := do(t, mux, "GET", "/api/ipguard/traffic", "", nil); code != 401 {
+		t.Fatalf("unauthenticated traffic should be 401, got %d", code)
+	}
+	if code, _ := do(t, mux, "POST", "/api/ipguard/block", "", map[string]any{"cidrs": []string{"1.2.3.0/24"}}); code != 401 {
+		t.Fatalf("unauthenticated block should be 401, got %d", code)
+	}
+}
+
+func TestTraffic(t *testing.T) {
+	a, mux := newTestAPI()
+	tok := setupToken(t, mux)
+
+	before := time.Now().Truncate(time.Minute)
+	for _, c := range hitGuard(a, "8.8.8.8:1", 3) {
+		if c != 200 {
+			t.Fatalf("guard should allow untrusted peer without country, got %d", c)
+		}
+	}
+	code, out := do(t, mux, "GET", "/api/ipguard/traffic?minutes=10", tok, nil)
+	if code != 200 {
+		t.Fatalf("traffic: %d %v", code, out)
+	}
+	sum, last, n := sumTotal(t, out)
+	if n != 10 || sum != 3 {
+		t.Fatalf("minutes: len=%d sum=%v, want 10 / 3", n, sum)
+	}
+	if time.Now().Truncate(time.Minute).Equal(before) && last != 3 {
+		t.Fatalf("last minute total = %v, want 3", last)
+	}
+	g := findGroup(t, out, "8.8.8.0/24")
+	if g == nil || g["count"].(float64) != 3 || g["blacklisted"] != false {
+		t.Fatalf("recent group 8.8.8.0/24: %v", out["recent"])
+	}
+
+	for q, want := range map[string]int{"": 10, "?minutes=0": 1, "?minutes=999": 60, "?minutes=abc": 10} {
+		_, out := do(t, mux, "GET", "/api/ipguard/traffic"+q, tok, nil)
+		if _, _, n := sumTotal(t, out); n != want {
+			t.Fatalf("traffic%s: len=%d want %d", q, n, want)
+		}
+	}
+	if code, out := do(t, mux, "GET", "/api/ipguard/traffic?limit=-5", tok, nil); code != 200 || findGroup(t, out, "8.8.8.0/24") == nil {
+		t.Fatalf("limit<=0 should use default: %d %v", code, out)
+	}
+}
+
+func TestBlock(t *testing.T) {
+	a, mux := newTestAPI()
+	tok := setupToken(t, mux)
+	hitGuard(a, "8.8.8.8:1", 2)
+
+	code, out := do(t, mux, "POST", "/api/ipguard/block", tok, map[string]any{"cidrs": []string{"8.8.8.0/24"}})
+	if code != 200 || out["ok"] != true {
+		t.Fatalf("block: %d %v", code, out)
+	}
+	code, out = do(t, mux, "GET", "/api/ipguard", tok, nil)
+	if code != 200 {
+		t.Fatalf("get config: %d %v", code, out)
+	}
+	blocks, _ := out["config"].(map[string]any)["block_ips"].([]any)
+	found := false
+	for _, b := range blocks {
+		found = found || b == "8.8.8.0/24"
+	}
+	if !found {
+		t.Fatalf("block_ips missing 8.8.8.0/24: %v", out["config"])
+	}
+	_, out = do(t, mux, "GET", "/api/ipguard/traffic", tok, nil)
+	if g := findGroup(t, out, "8.8.8.0/24"); g == nil || g["blacklisted"] != true {
+		t.Fatalf("group should be blacklisted: %v", out["recent"])
+	}
+	if c := hitGuard(a, "8.8.8.9:1", 1)[0]; c != 403 {
+		t.Fatalf("blacklisted subnet should get 403, got %d", c)
+	}
+
+	if code, out := do(t, mux, "POST", "/api/ipguard/block", tok, map[string]any{"cidrs": []string{"not-a-cidr"}}); code != 400 || out["error"] == nil {
+		t.Fatalf("invalid cidr should 400: %d %v", code, out)
+	}
+	if code, _ := do(t, mux, "POST", "/api/ipguard/block", tok, map[string]any{"cidrs": []string{}}); code != 400 {
+		t.Fatalf("empty cidrs should 400, got %d", code)
+	}
+}
+
+func TestStatsResetClearsTraffic(t *testing.T) {
+	a, mux := newTestAPI()
+	tok := setupToken(t, mux)
+	hitGuard(a, "8.8.8.8:1", 2)
+
+	if code, _ := do(t, mux, "POST", "/api/ipguard/stats/reset", tok, nil); code != 200 {
+		t.Fatalf("stats reset: %d", code)
+	}
+	_, out := do(t, mux, "GET", "/api/ipguard/traffic?minutes=10", tok, nil)
+	if sum, last, _ := sumTotal(t, out); sum != 0 || last != 0 {
+		t.Fatalf("after reset totals should be 0, sum=%v last=%v", sum, last)
+	}
+	if g := findGroup(t, out, "8.8.8.0/24"); g != nil {
+		t.Fatalf("recent should be empty after reset: %v", out["recent"])
+	}
+}
+
+func TestCoverPoolConfig(t *testing.T) {
+	mux := http.NewServeMux()
+	store := &fakeCoverPoolStore{}
+	a := &API{
+		Auth:      &fakeAuth{sessions: map[string]bool{}},
+		CoverPool: coverpool.NewConfig(store, nil),
+	}
+	a.Mount(mux)
+
+	if code, _ := do(t, mux, "GET", "/api/cover-pool", "", nil); code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated cover pool should be 401, got %d", code)
+	}
+	tok := setupToken(t, mux)
+
+	assertCount := func(method string, body any, want int) {
+		t.Helper()
+		code, out := do(t, mux, method, "/api/cover-pool", tok, body)
+		config, _ := out["config"].(map[string]any)
+		if code != http.StatusOK || out["ok"] != true || config["count"] != float64(want) {
+			t.Fatalf("%s cover pool: %d %v, want count %d", method, code, out, want)
+		}
+	}
+	assertCount("GET", nil, 10)
+	assertCount("PUT", map[string]any{"count": 20}, 20)
+	if store.count != 20 {
+		t.Fatalf("stored count = %d, want 20", store.count)
+	}
+	assertCount("GET", nil, 20)
+
+	for _, count := range []int{0, 101} {
+		code, out := do(t, mux, "PUT", "/api/cover-pool", tok, map[string]any{"count": count})
+		err, _ := out["error"].(string)
+		if code != http.StatusBadRequest || !strings.Contains(err, "1") || !strings.Contains(err, "100") {
+			t.Fatalf("count %d should be rejected: %d %v", count, code, out)
+		}
+	}
+	assertCount("GET", nil, 20)
+}
+
+func TestCoverPoolConfigUnavailable(t *testing.T) {
+	mux := newTestMux()
+	tok := setupToken(t, mux)
+	for _, method := range []string{"GET", "PUT"} {
+		var body any
+		if method == "PUT" {
+			body = map[string]any{"count": 10}
+		}
+		if code, out := do(t, mux, method, "/api/cover-pool", tok, body); code != http.StatusServiceUnavailable {
+			t.Fatalf("%s unavailable cover pool: %d %v, want 503", method, code, out)
+		}
+	}
+}
+
+func TestServeUI(t *testing.T) {
+	mux := newTestMux()
+	for _, p := range []string{"/ytmadmin/", "/ytmadmin/ipguard.html", "/ytmadmin/blocked.html", "/ytmadmin/covers.html", "/ytmadmin/account.html", "/ytmadmin/common.css", "/ytmadmin/common.js"} {
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, httptest.NewRequest("GET", p, nil))
+		if w.Code != 200 || w.Body.Len() == 0 {
+			t.Fatalf("%s: %d", p, w.Code)
+		}
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest("GET", "/ytmadmin/../go.mod", nil))
+	if w.Code == 200 {
+		t.Fatal("path traversal should not serve")
+	}
+}
+
+func TestIsExemptPath(t *testing.T) {
+	for p, want := range map[string]bool{
+		"/ytmadmin": true, "/ytmadmin/x": true, "/api/health": true,
+		"/vod/abc": false, "/ytmadminx": false, "/apix": false, "/home/image": false,
+	} {
+		if IsExemptPath(p) != want {
+			t.Fatalf("IsExemptPath(%q) != %v", p, want)
+		}
+	}
+}

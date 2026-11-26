@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex,nofollow" />
+  <title>登录 · logo23007 后台</title>
+  <link rel="stylesheet" href="common.css" />
+</head>
+<body>
+  <div class="wrap narrow">
+    <h1>logo23007 · 后台</h1>
+    <form id="loginCard" class="card" autocomplete="on">
+      <h2 id="loginTitle">登录</h2>
+      <p id="loginHint" class="muted" style="margin:0 0 20px"></p>
+      <label for="usernameInput">用户名</label>
+      <input id="usernameInput" type="text" autocomplete="username" />
+      <label for="passwordInput">密码</label>
+      <input id="passwordInput" type="password" placeholder="至少 6 位" autocomplete="current-password" />
+      <label id="password2Label" for="password2Input" class="hidden">确认密码</label>
+      <input id="password2Input" class="hidden" type="password" placeholder="再输入一次" autocomplete="new-password" />
+      <button id="btnLogin" class="full" type="submit">登录</button>
+    </form>
+  </div>
+  <script src="common.js"></script>
+  <script>
+    let setupMode = false;
+    function setSetupUI(needSetup) {
+      setupMode = !!needSetup;
+      $('loginTitle').textContent = setupMode ? '首次创建管理员' : '登录';
+      $('loginHint').textContent = setupMode
+        ? '尚未创建账号，请设置用户名和密码（密码至少 6 位）'
+        : '使用管理员账号登录';
+      $('password2Label').classList.toggle('hidden', !setupMode);
+      $('password2Input').classList.toggle('hidden', !setupMode);
+      $('btnLogin').textContent = setupMode ? '创建并进入' : '登录';
+    }
+    $('loginCard').onsubmit = async (e) => {
+      e.preventDefault();
+      const username = $('usernameInput').value.trim();
+      const password = $('passwordInput').value;
+      if (!username || !password) { toast('请输入用户名和密码', false); return; }
+      if (setupMode) {
+        if (password.length < 6) { toast('密码至少 6 位', false); return; }
+        if (password !== $('password2Input').value) { toast('两次密码不一致', false); return; }
+      }
+      $('btnLogin').disabled = true;
+      try {
+        const data = await api('POST', setupMode ? '/api/auth/setup' : '/api/auth/login', { username, password });
+        setToken(data.token);
+        location.href = 'ipguard.html';
+      } catch (err) {
+        clearToken();
+        toast(err.message || String(err), false);
+      } finally {
+        $('btnLogin').disabled = false;
+      }
+    };
+    (async () => {
+      try {
+        const st = await api('GET', '/api/auth/status');
+        setSetupUI(!!st.setup_required);
+      } catch (err) {
+        toast('无法获取账号状态：' + err.message, false);
+      }
+      if (getToken()) {
+        try {
+          await api('GET', '/api/ipguard');
+          location.href = 'ipguard.html';
+        } catch (_) { clearToken(); }
+      }
+    })();
+  </script>
+</body>
+</html>

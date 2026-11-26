@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex,nofollow" />
+  <title>拦截记录 · logo23007 后台</title>
+  <link rel="stylesheet" href="common.css" />
+  <style>
+    @media (min-width: 640px) and (max-width: 1023px) { .grid.cols-5 { grid-template-columns: repeat(2, 1fr); } }
+    @media (min-width: 1024px) { .grid.cols-5 { grid-template-columns: repeat(5, 1fr); } }
+    .pill.warn { background: rgba(217, 119, 6, .14); color: #b45309; }
+    @media (prefers-color-scheme: dark) { .pill.warn { background: rgba(251, 191, 36, .14); color: #fbbf24; } }
+    td.reason { white-space: nowrap; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <nav id="nav" class="nav"></nav>
+
+    <div class="grid cols-5">
+      <div class="card stat"><div class="muted">拦截 (403)</div><div id="sBlocked" class="num">-</div></div>
+      <div class="card stat"><div class="muted">限速 503</div><div id="sRateLimited" class="num">-</div></div>
+      <div class="card stat"><div class="muted">国家放行</div><div id="sCountry" class="num">-</div></div>
+      <div class="card stat"><div class="muted">IP / UA 白名单放行</div><div id="sWhite" class="num">-</div></div>
+      <div class="card stat"><div class="muted">无国家头放行</div><div id="sNoCountry" class="num">-</div></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h2>拦截来源国家</h2>
+          <p id="since" class="muted" style="margin:0"></p>
+        </div>
+        <div class="row">
+          <label class="switch" style="margin:0"><input id="autoRefresh" type="checkbox" checked /><span class="track"></span><span class="label">每 10 秒刷新</span></label>
+          <button id="btnRefresh" class="secondary" type="button">刷新</button>
+          <button id="btnReset" class="danger" type="button">清零</button>
+        </div>
+      </div>
+      <div id="countries" class="row" style="gap:8px"></div>
+    </div>
+
+    <div class="card">
+      <h2>最近拦截 / 限速（最多 500 条，进程内存，重启清空）</h2>
+      <div class="table-wrap" style="margin-top:12px">
+        <table>
+          <thead><tr><th>时间</th><th>原因</th><th>IP</th><th>国家</th><th>请求</th><th>User-Agent</th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script src="common.js"></script>
+  <script>
+    function reasonPill(reason) {
+      return reason === 'rate_limit'
+        ? `<span class="pill warn">${escapeHtml('503 限速')}</span>`
+        : `<span class="pill err">${escapeHtml('403 拦截')}</span>`;
+    }
+
+    async function load() {
+      const data = await api('GET', '/api/ipguard/stats?limit=500');
+      const s = data.stats, a = s.allowed || {};
+      $('sBlocked').textContent = s.blocked;
+      $('sRateLimited').textContent = s.rate_limited || 0;
+      $('sCountry').textContent = a.country || 0;
+      $('sWhite').textContent = (a.ip || 0) + (a.ua || 0);
+      $('sNoCountry').textContent = a.no_country || 0;
+      $('since').textContent = '统计起点：' + fmtTime(s.since) + (a.disabled ? `；规则关闭期间放行 ${a.disabled}` : '');
+      $('countries').innerHTML = (s.blocked_countries || []).length
+        ? s.blocked_countries.map(c => `<span class="pill err">${escapeHtml(c.country)} · ${c.count}</span>`).join('')
+        : '<span class="muted">暂无拦截</span>';
+      $('rows').innerHTML = (data.recent || []).map(r => `
+        <tr>
+          <td class="mono">${escapeHtml(fmtTime(r.time))}</td>
+          <td class="reason">${reasonPill(r.reason)}</td>
+          <td class="mono">${escapeHtml(r.ip)}</td>
+          <td>${escapeHtml(r.country || '-')}</td>
+          <td class="path mono">${escapeHtml(r.method)} ${escapeHtml(r.host)}${escapeHtml(r.path)}</td>
+          <td class="ua">${escapeHtml(r.ua || '-')}</td>
+        </tr>`).join('') || '<tr><td colspan="6" class="muted">暂无记录</td></tr>';
+    }
+
+    $('btnRefresh').onclick = () => load().catch(e => toast(e.message, false));
+    $('btnReset').onclick = async () => {
+      if (!confirm('确认清零统计与拦截记录？')) return;
+      try { await api('POST', '/api/ipguard/stats/reset', {}); await load(); toast('已清零', true); }
+      catch (e) { toast(e.message, false); }
+    };
+    setInterval(() => { if ($('autoRefresh').checked && !document.hidden) load().catch(() => {}); }, 10000);
+
+    if (requireToken()) {
+      renderNav('blocked.html');
+      load().catch(e => toast(e.message, false));
+    }
+  </script>
+</body>
+</html>

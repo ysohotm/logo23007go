@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex,nofollow" />
+  <title>访问分析 · logo23007 后台</title>
+  <link rel="stylesheet" href="common.css" />
+  <style>
+    :root {
+      --c-allow: rgba(34, 197, 94, .62);
+      --c-deny: #ef4444;
+      --c-black: #b91c1c;
+      --c-rate: #f59e0b;
+      --c-track: rgba(15, 23, 42, .04);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --c-allow: rgba(74, 222, 128, .5);
+        --c-deny: #f87171;
+        --c-black: #dc2626;
+        --c-rate: #fbbf24;
+        --c-track: rgba(148, 163, 184, .06);
+      }
+    }
+    @media (max-width: 639px) {
+      .grid.cols-4.stats { grid-template-columns: repeat(2, 1fr); gap: 12px; }
+      .stats .card { padding: 16px; }
+      .stats .num { font-size: 1.4rem; }
+    }
+    .stats { margin-bottom: 20px; }
+    .stats .card { margin-bottom: 0; border-radius: 16px; }
+    .num small { font-size: .8rem; font-weight: 500; color: var(--muted); margin-left: 4px; }
+
+    .legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: .78rem; color: var(--muted); margin-bottom: 12px; }
+    .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+    .chart { display: flex; gap: 8px; align-items: stretch; padding: 12px; border-radius: 14px; background: var(--c-track); }
+    .bar-col {
+      flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center;
+      border-radius: 12px; padding: 6px 2px; cursor: default; transition: all .3s ease-in-out;
+    }
+    .bar-col:hover { background: var(--accent-soft); }
+    .bar-col:active { transform: scale(.98); }
+    .bar-area { height: 184px; width: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; }
+    .bar-total { font-size: .72rem; font-weight: 600; font-variant-numeric: tabular-nums; margin-bottom: 4px; white-space: nowrap; }
+    .bar {
+      width: 100%; max-width: 40px; display: flex; flex-direction: column-reverse; overflow: hidden;
+      border-radius: 8px 8px 4px 4px; box-shadow: var(--shadow); transition: all .3s ease-in-out;
+    }
+    .bar-col:hover .bar { filter: brightness(1.08); transform: translateY(-2px); }
+    .bar > div { width: 100%; flex: none; transition: all .3s ease-in-out; }
+    .seg-allow { background: var(--c-allow); }
+    .seg-deny { background: var(--c-deny); }
+    .seg-black { background: var(--c-black); }
+    .seg-rate { background: var(--c-rate); }
+    .bar-col.live .bar { opacity: .5; background-image: repeating-linear-gradient(45deg, rgba(255,255,255,.18) 0 4px, transparent 4px 8px); }
+    .bar-label { margin-top: 8px; font-size: .72rem; color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+    @media (max-width: 639px) { .bar-label, .bar-total { font-size: .6rem; letter-spacing: -.02em; } }
+    .bar-live { font-size: .66rem; color: var(--accent); font-weight: 600; height: 14px; line-height: 14px; }
+
+    details.minute-table { margin-top: 16px; }
+    details.minute-table summary {
+      cursor: pointer; font-size: .85rem; font-weight: 500; color: var(--muted); padding: 8px 12px;
+      border-radius: 12px; width: fit-content; transition: all .3s ease-in-out; list-style: none;
+    }
+    details.minute-table summary::-webkit-details-marker { display: none; }
+    details.minute-table summary::before { content: "▸"; display: inline-block; margin-right: 6px; transition: all .3s ease-in-out; }
+    details.minute-table[open] summary::before { transform: rotate(90deg); }
+    details.minute-table summary:hover { color: var(--text); background: var(--accent-soft); }
+    details.minute-table summary:active { transform: scale(.98); }
+    td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+    .filters {
+      display: grid; gap: 12px 16px; grid-template-columns: 1fr; align-items: end;
+      padding: 16px; border-radius: 14px; background: var(--c-track); border: 1px solid var(--border); margin-bottom: 16px;
+    }
+    @media (min-width: 640px) { .filters { grid-template-columns: 1fr 1fr; } }
+    @media (min-width: 1024px) { .filters { grid-template-columns: 1.1fr .7fr 1.3fr auto auto; } }
+    .filters label { margin-bottom: 6px; }
+    .filters input[type=text], .filters input[type=number] { margin-bottom: 0; }
+    .filters .switch { margin: 0; padding: 9px 0; white-space: nowrap; }
+    input[type=number] {
+      width: 100%; padding: 10px 14px; border-radius: 12px; border: 1px solid var(--border);
+      background: var(--input); color: var(--text); font: inherit; transition: all .3s ease-in-out;
+    }
+    input[type=text]:hover, input[type=number]:hover { border-color: var(--muted); }
+    input[type=checkbox].pick {
+      width: 16px; height: 16px; margin: 0; cursor: pointer; accent-color: var(--accent);
+      transition: all .3s ease-in-out; vertical-align: middle;
+    }
+    input[type=checkbox].pick:hover { transform: scale(1.1); }
+    input[type=checkbox].pick:disabled { cursor: not-allowed; opacity: .35; transform: none; }
+
+    .toolbar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+    #groupTable { min-width: 980px; }
+    #groupTable td { vertical-align: middle; }
+    th.sortable { cursor: pointer; user-select: none; transition: all .3s ease-in-out; border-radius: 8px; }
+    th.sortable:hover { color: var(--text); background: var(--accent-soft); }
+    th.sortable:active { transform: scale(.97); }
+    th.sortable .arrow { display: inline-block; width: 10px; margin-left: 4px; color: var(--accent); }
+    th.sorted { color: var(--text); }
+    td.top-ua { max-width: 280px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+    td.cc { white-space: nowrap; font-weight: 500; }
+    tr.picked { background: var(--accent-soft); }
+    button.sm { padding: 6px 12px; font-size: .8rem; border-radius: 10px; }
+    .blocked-n { color: var(--err); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <nav id="nav" class="nav"></nav>
+
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h2>最近 10 分钟请求数（每分钟）</h2>
+          <p id="updated" class="muted" style="margin:0"></p>
+        </div>
+        <div class="row">
+          <label class="switch" style="margin:0"><input id="autoRefresh" type="checkbox" checked /><span class="track"></span><span class="label">每 10 秒刷新</span></label>
+          <button id="btnRefresh" class="secondary" type="button">刷新</button>
+        </div>
+      </div>
+
+      <div class="grid cols-4 stats">
+        <div class="card stat"><div class="muted">10 分钟合计</div><div id="sTotal" class="num">-</div></div>
+        <div class="card stat"><div class="muted">放行</div><div id="sAllowed" class="num">-</div></div>
+        <div class="card stat"><div class="muted">403 拦截</div><div id="sDenied" class="num">-</div></div>
+        <div class="card stat"><div class="muted">503 限速</div><div id="sRate" class="num">-</div></div>
+      </div>
+
+      <div class="legend">
+        <span><i style="background:var(--c-allow)"></i>放行</span>
+        <span><i style="background:var(--c-deny)"></i>403 拦截</span>
+        <span><i style="background:var(--c-black)"></i>其中黑名单</span>
+        <span><i style="background:var(--c-rate)"></i>503 限速</span>
+        <span><i style="background:var(--accent);opacity:.5"></i>当前分钟（进行中）</span>
+      </div>
+      <div id="chart" class="chart"><span class="muted">加载中…</span></div>
+
+      <details class="minute-table">
+        <summary>查看每分钟明细</summary>
+        <div class="table-wrap" style="margin-top:8px">
+          <table>
+            <thead><tr><th>时间</th><th class="n">总数</th><th class="n">放行</th><th class="n">403</th><th class="n">其中黑名单</th><th class="n">503</th></tr></thead>
+            <tbody id="minuteRows"></tbody>
+          </table>
+        </div>
+      </details>
+    </div>
+
+    <div class="card">
+      <h2>最近访问按网段聚合</h2>
+      <p id="recentInfo" class="muted" style="margin:0 0 16px"></p>
+
+      <div class="filters">
+        <div>
+          <label for="fCountry">国家（逗号分隔，空 = 全部）</label>
+          <input id="fCountry" type="text" placeholder="如 US, SG, -" autocomplete="off" />
+        </div>
+        <div>
+          <label for="fMin">最少请求数</label>
+          <input id="fMin" type="number" min="0" step="1" placeholder="0" />
+        </div>
+        <div>
+          <label for="fKeyword">关键字（网段 / UA）</label>
+          <input id="fKeyword" type="text" placeholder="如 1.2.3. 或 python-requests" autocomplete="off" />
+        </div>
+        <label class="switch"><input id="fHideBlack" type="checkbox" /><span class="track"></span><span class="label">隐藏已拉黑</span></label>
+        <label class="switch"><input id="fAllowedOnly" type="checkbox" /><span class="track"></span><span class="label">只看有放行流量的</span></label>
+      </div>
+
+      <div class="toolbar">
+        <span id="filterInfo" class="muted"></span>
+        <button id="btnBatch" class="danger" type="button" disabled>批量拉黑所选 (0)</button>
+      </div>
+
+      <div class="table-wrap">
+        <table id="groupTable">
+          <thead>
+            <tr>
+              <th style="width:32px"><input id="pickAll" class="pick" type="checkbox" title="全选当前筛选结果" /></th>
+              <th>网段</th>
+              <th>国家</th>
+              <th class="n sortable" data-sort="count">请求数<span class="arrow"></span></th>
+              <th class="n sortable" data-sort="blocked">其中拦截<span class="arrow"></span></th>
+              <th class="n sortable" data-sort="ips">IP 数<span class="arrow"></span></th>
+              <th class="n sortable" data-sort="uas">UA 数<span class="arrow"></span></th>
+              <th>主要 UA</th>
+              <th>最后访问</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="groupRows"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script src="common.js"></script>
+  <script>
+    let groups = [];
+    let visible = [];
+    const picked = new Set();
+    const sort = { key: 'count', dir: -1 };
+    let loading = false;
+
+    function fmtNum(n) { return Number(n || 0).toLocaleString('zh-CN'); }
+
+    function hhmm(s) {
+      const m = /T(\d{2}:\d{2})/.exec(s || '');
+      if (m) return m[1];
+      const d = new Date(s);
+      return isNaN(d) ? '-' : String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+    }
+
+    function renderMinutes(list) {
+      const sum = { total: 0, allowed: 0, denied: 0, blacklisted: 0, rate_limited: 0 };
+      list.forEach(m => Object.keys(sum).forEach(k => { sum[k] += m[k] || 0; }));
+      $('sTotal').textContent = fmtNum(sum.total);
+      $('sAllowed').textContent = fmtNum(sum.allowed);
+      $('sDenied').innerHTML = `${escapeHtml(fmtNum(sum.denied))}<small>（黑名单 ${escapeHtml(fmtNum(sum.blacklisted))}）</small>`;
+      $('sRate').textContent = fmtNum(sum.rate_limited);
+
+      if (!list.length) {
+        $('chart').innerHTML = '<span class="muted">暂无数据</span>';
+        $('minuteRows').innerHTML = '<tr><td colspan="6" class="muted">暂无数据</td></tr>';
+        return;
+      }
+      const H = 160;
+      const max = Math.max(1, ...list.map(m => m.total || 0));
+      $('chart').innerHTML = list.map((m, i) => {
+        const live = i === list.length - 1;
+        const total = m.total || 0;
+        const black = m.blacklisted || 0;
+        const deny = Math.max(0, (m.denied || 0) - black);
+        const parts = [['seg-allow', m.allowed || 0], ['seg-deny', deny], ['seg-black', black], ['seg-rate', m.rate_limited || 0]];
+        const h = total ? Math.max(3, Math.round(total / max * H)) : 0;
+        const segs = total ? parts.filter(p => p[1] > 0).map(p => `<div class="${p[0]}" style="height:${(p[1] / total * 100).toFixed(2)}%"></div>`).join('') : '';
+        const tip = `${hhmm(m.minute)}${live ? '（进行中）' : ''}\n总数 ${total}\n放行 ${m.allowed || 0}\n403 拦截 ${m.denied || 0}（黑名单 ${black}）\n503 限速 ${m.rate_limited || 0}`;
+        return `
+          <div class="bar-col${live ? ' live' : ''}" title="${escapeHtml(tip)}">
+            <div class="bar-area">
+              <div class="bar-total">${escapeHtml(fmtNum(total))}</div>
+              <div class="bar" style="height:${h}px">${segs}</div>
+            </div>
+            <div class="bar-label">${escapeHtml(hhmm(m.minute))}</div>
+            <div class="bar-live">${live ? '进行中' : ''}</div>
+          </div>`;
+      }).join('');
+
+      $('minuteRows').innerHTML = list.slice().reverse().map((m, i) => `
+        <tr>
+          <td class="mono">${escapeHtml(hhmm(m.minute))}${i === 0 ? ' <span class="pill">进行中</span>' : ''}</td>
+          <td class="n">${escapeHtml(fmtNum(m.total))}</td>
+          <td class="n">${escapeHtml(fmtNum(m.allowed))}</td>
+          <td class="n">${escapeHtml(fmtNum(m.denied))}</td>
+          <td class="n">${escapeHtml(fmtNum(m.blacklisted))}</td>
+          <td class="n">${escapeHtml(fmtNum(m.rate_limited))}</td>
+        </tr>`).join('');
+    }
+
+    function renderRecentInfo(r) {
+      $('recentInfo').textContent =
+        `最近 ${fmtNum(r.total)} 条访问（容量 ${fmtNum(r.capacity)}，最早 ${fmtTime(r.oldest)}），` +
+        `共 ${fmtNum(r.subnets)} 个网段（IPv4 按 /24，IPv6 按 /48）` +
+        (groups.length < (r.subnets || 0) ? `，下表列出请求数最多的 ${fmtNum(groups.length)} 个` : '') +
+        '。进程内存，重启清空。';
+    }
+
+    function readFilters() {
+      const countries = $('fCountry').value.split(/[,，\s]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
+      return {
+        countries: new Set(countries),
+        min: Math.max(0, parseInt($('fMin').value, 10) || 0),
+        keyword: $('fKeyword').value.trim().toLowerCase(),
+        hideBlack: $('fHideBlack').checked,
+        allowedOnly: $('fAllowedOnly').checked
+      };
+    }
+
+    function applyFilters() {
+      const f = readFilters();
+      const out = groups.filter(g => {
+        if (f.countries.size && !f.countries.has(String(g.country || '-').toUpperCase())) return false;
+        if ((g.count || 0) < f.min) return false;
+        if (f.hideBlack && g.blacklisted) return false;
+        if (f.allowedOnly && !((g.count || 0) > (g.blocked || 0))) return false;
+        if (f.keyword && !String(g.subnet || '').toLowerCase().includes(f.keyword) &&
+            !String(g.top_ua || '').toLowerCase().includes(f.keyword)) return false;
+        return true;
+      });
+      out.sort((a, b) => ((a[sort.key] || 0) - (b[sort.key] || 0)) * sort.dir || (b.count || 0) - (a.count || 0) ||
+        String(a.subnet).localeCompare(String(b.subnet)));
+      return out;
+    }
+
+    function selectable() { return visible.filter(g => !g.blacklisted); }
+    function pickedVisible() { return selectable().filter(g => picked.has(g.subnet)).map(g => g.subnet); }
+
+    function renderSelection() {
+      const sel = selectable();
+      const n = pickedVisible().length;
+      $('btnBatch').textContent = `批量拉黑所选 (${n})`;
+      $('btnBatch').disabled = n === 0;
+      $('pickAll').disabled = sel.length === 0;
+      $('pickAll').checked = sel.length > 0 && n === sel.length;
+      $('pickAll').indeterminate = n > 0 && n < sel.length;
+    }
+
+    function renderGroups() {
+      visible = applyFilters();
+      document.querySelectorAll('th.sortable').forEach(th => {
+        const on = th.dataset.sort === sort.key;
+        th.classList.toggle('sorted', on);
+        th.querySelector('.arrow').textContent = on ? (sort.dir < 0 ? '↓' : '↑') : '';
+      });
+      $('filterInfo').textContent = `当前显示 ${fmtNum(visible.length)} / ${fmtNum(groups.length)} 个网段`;
+      $('groupRows').innerHTML = visible.map(g => {
+        const cidr = escapeHtml(g.subnet);
+        const on = !g.blacklisted && picked.has(g.subnet);
+        return `
+        <tr class="${on ? 'picked' : ''}">
+          <td><input class="pick" type="checkbox" data-cidr="${cidr}"${on ? ' checked' : ''}${g.blacklisted ? ' disabled' : ''} /></td>
+          <td class="mono">${cidr}</td>
+          <td class="cc">${escapeHtml(g.country || '-')}</td>
+          <td class="n">${escapeHtml(fmtNum(g.count))}</td>
+          <td class="n${g.blocked ? ' blocked-n' : ''}">${escapeHtml(fmtNum(g.blocked))}</td>
+          <td class="n">${escapeHtml(fmtNum(g.ips))}</td>
+          <td class="n">${escapeHtml(fmtNum(g.uas))}</td>
+          <td class="top-ua" title="${escapeHtml(g.top_ua || '')}">${escapeHtml(g.top_ua || '-')}</td>
+          <td class="mono" style="white-space:nowrap">${escapeHtml(fmtTime(g.last_seen))}</td>
+          <td>${g.blacklisted
+            ? '<span class="pill err">已拉黑</span>'
+            : `<button class="danger sm" type="button" data-block="${cidr}">拉黑</button>`}</td>
+        </tr>`;
+      }).join('') || '<tr><td colspan="10" class="muted">暂无匹配的网段</td></tr>';
+      renderSelection();
+    }
+
+    async function load() {
+      if (loading) return;
+      loading = true;
+      try {
+        const data = await api('GET', '/api/ipguard/traffic?minutes=10&limit=500');
+        const r = data.recent || {};
+        groups = r.groups || [];
+        const alive = new Set(groups.filter(g => !g.blacklisted).map(g => g.subnet));
+        [...picked].forEach(c => { if (!alive.has(c)) picked.delete(c); });
+        renderMinutes(data.minutes || []);
+        renderRecentInfo(r);
+        renderGroups();
+        $('updated').textContent = '更新于 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false });
+      } finally {
+        loading = false;
+      }
+    }
+
+    async function block(cidrs) {
+      if (!cidrs.length) return;
+      const preview = cidrs.slice(0, 10).join('\n') + (cidrs.length > 10 ? `\n… 共 ${cidrs.length} 个` : '');
+      if (!confirm(`确认将以下 ${cidrs.length} 个网段加入黑名单？\n\n${preview}`)) return;
+      try {
+        await api('POST', '/api/ipguard/block', { cidrs });
+        cidrs.forEach(c => picked.delete(c));
+        toast(`已拉黑 ${cidrs.length} 个网段`, true);
+        await load();
+      } catch (e) { toast(e.message, false); }
+    }
+
+    $('groupRows').addEventListener('change', e => {
+      const cb = e.target.closest('input[data-cidr]');
+      if (!cb) return;
+      if (cb.checked) picked.add(cb.dataset.cidr); else picked.delete(cb.dataset.cidr);
+      cb.closest('tr').classList.toggle('picked', cb.checked);
+      renderSelection();
+    });
+    $('groupRows').addEventListener('click', e => {
+      const btn = e.target.closest('button[data-block]');
+      if (btn) block([btn.dataset.block]);
+    });
+    $('pickAll').addEventListener('change', e => {
+      selectable().forEach(g => { if (e.target.checked) picked.add(g.subnet); else picked.delete(g.subnet); });
+      renderGroups();
+    });
+    document.querySelector('#groupTable thead').addEventListener('click', e => {
+      const th = e.target.closest('th.sortable');
+      if (!th) return;
+      if (sort.key === th.dataset.sort) sort.dir = -sort.dir;
+      else { sort.key = th.dataset.sort; sort.dir = -1; }
+      renderGroups();
+    });
+    ['fCountry', 'fMin', 'fKeyword'].forEach(id => $(id).addEventListener('input', renderGroups));
+    ['fHideBlack', 'fAllowedOnly'].forEach(id => $(id).addEventListener('change', renderGroups));
+    $('btnBatch').onclick = () => block(pickedVisible());
+
+    $('btnRefresh').onclick = () => load().catch(e => toast(e.message, false));
+    setInterval(() => { if ($('autoRefresh').checked && !document.hidden) load().catch(() => {}); }, 10000);
+
+    if (requireToken()) {
+      renderNav('traffic.html');
+      load().catch(e => toast(e.message, false));
+    }
+  </script>
+</body>
+</html>

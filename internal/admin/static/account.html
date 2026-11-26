@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex,nofollow" />
+  <title>账号 · logo23007 后台</title>
+  <link rel="stylesheet" href="common.css" />
+</head>
+<body>
+  <div class="wrap">
+    <nav id="nav" class="nav"></nav>
+
+    <form id="form" class="card" style="max-width:520px" autocomplete="off">
+      <h2>修改账号 / 密码</h2>
+      <p class="muted" style="margin:0 0 20px">当前用户名：<code id="curName">-</code>。保存后其它已登录的会话全部失效。</p>
+      <label for="username">新用户名（留空则不改）</label>
+      <input id="username" type="text" autocomplete="username" />
+      <label for="password">新密码（留空则不改，至少 6 位）</label>
+      <input id="password" type="password" autocomplete="new-password" />
+      <label for="password2">确认新密码</label>
+      <input id="password2" type="password" autocomplete="new-password" />
+      <label for="oldPassword">当前密码（必填）</label>
+      <input id="oldPassword" type="password" autocomplete="current-password" />
+      <button id="btnSave" class="full" type="submit">保存</button>
+    </form>
+  </div>
+
+  <script src="common.js"></script>
+  <script>
+    async function loadMe() {
+      const me = await api('GET', '/api/auth/me');
+      $('curName').textContent = me.username;
+    }
+    $('form').onsubmit = async (e) => {
+      e.preventDefault();
+      const username = $('username').value.trim();
+      const password = $('password').value;
+      const oldPassword = $('oldPassword').value;
+      if (!oldPassword) { toast('请输入当前密码', false); return; }
+      if (!username && !password) { toast('未填写新用户名或新密码', false); return; }
+      if (password && password.length < 6) { toast('新密码至少 6 位', false); return; }
+      if (password !== $('password2').value) { toast('两次新密码不一致', false); return; }
+      $('btnSave').disabled = true;
+      try {
+        const data = await api('POST', '/api/auth/change', { old_password: oldPassword, username, password });
+        setToken(data.token);
+        $('form').reset();
+        await loadMe();
+        toast('已保存', true);
+      } catch (err) {
+        toast(err.message, false);
+      } finally {
+        $('btnSave').disabled = false;
+      }
+    };
+    if (requireToken()) {
+      renderNav('account.html');
+      loadMe().catch(e => toast(e.message, false));
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex,nofollow" />
+  <title>访问限制 · logo23007 后台</title>
+  <link rel="stylesheet" href="common.css" />
+  <style>
+    .rl-grid { display: grid; gap: 16px 24px; grid-template-columns: 1fr; margin: 4px 0 12px; }
+    @media (min-width: 768px) { .rl-grid { grid-template-columns: 1fr 1fr; } }
+    .rl-inline { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-weight: 500; }
+    .rl-inline input[type=number] { width: 120px; }
+    input[type=number], select {
+      padding: 10px 14px; border-radius: 12px; border: 1px solid var(--border);
+      background: var(--input); color: var(--text); font: inherit; transition: all .3s ease-in-out;
+    }
+    select { width: 100%; cursor: pointer; }
+    select:hover, input[type=number]:hover { border-color: var(--accent); }
+    select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <nav id="nav" class="nav"></nav>
+
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h2>访问限制</h2>
+          <p class="muted" style="margin:0">按顺序检查：IP 白名单 → IP 黑名单（命中返回 403）→ UA 白名单 → CF-IPCountry 国家（均未命中返回 403）→ 限速（超出返回 503）。<br />
+            <code>CF-IPCountry</code> 仅在连接来自可信代理（Cloudflare / 自有服务器 / 内网）时才采信，防止伪造。</p>
+        </div>
+        <span id="updatedAt" class="muted"></span>
+      </div>
+      <label class="switch"><input id="enabled" type="checkbox" /><span class="track"></span><span class="label">启用访问限制</span></label>
+      <label class="switch"><input id="allowNoCountry" type="checkbox" /><span class="track"></span><span class="label">请求无 CF-IPCountry 时放行（未经 Cloudflare 的流量）</span></label>
+    </div>
+
+    <div class="grid cols-2">
+      <div class="card">
+        <h2>放行国家</h2>
+        <p class="muted" style="margin:0 0 12px">ISO 两位国家码，逗号、空格或换行分隔。</p>
+        <input id="countries" type="text" placeholder="HK, CN, SG" />
+        <h2>UA 白名单</h2>
+        <p class="muted" style="margin:0 0 12px">每行一个关键字，User-Agent 包含即放行（不区分大小写）。</p>
+        <textarea id="uas" spellcheck="false"></textarea>
+      </div>
+      <div class="card">
+        <h2>IP 白名单</h2>
+        <p class="muted" style="margin:0 0 12px">每行一个 IP 或 CIDR，<code>#</code> 后为注释。默认含 bwh8 / dmit01 / dmit02 / hehk03 / v99 及内网段。</p>
+        <textarea id="ips" spellcheck="false" style="min-height:300px"></textarea>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h2>IP 黑名单</h2>
+          <p class="muted" style="margin:0">每行一个 IP 或 CIDR（如 <code>1.2.3.0/24</code>），<code>#</code> 后为注释。命中返回 <code>403</code>，优先于 UA 白名单和国家放行；IP 白名单中的地址不受黑名单影响；仅在启用访问限制时生效。<br />
+            可在「访问分析」页按 /24 网段一键加入。</p>
+        </div>
+        <span id="blockCount" class="muted"></span>
+      </div>
+      <textarea id="blockIps" spellcheck="false" placeholder="1.2.3.0/24  # 示例注释"></textarea>
+    </div>
+
+    <div class="card">
+      <h2>限速（滚动窗口）</h2>
+      <p class="muted" style="margin:0 0 12px">在上面的访问规则之后执行（只统计已放行的请求），即使未启用访问限制也生效；超出上限返回 <code>503</code> 并带 <code>Retry-After</code>。计数器在进程内存中，多实例部署时各实例分别计数。</p>
+      <label class="switch"><input id="rlEnabled" type="checkbox" /><span class="track"></span><span class="label">启用限速</span></label>
+      <div class="rl-grid">
+        <div>
+          <label for="rlWindow">窗口与上限</label>
+          <div class="rl-inline">
+            每 <input id="rlWindow" type="number" min="1" max="3600" step="1" inputmode="numeric" /> 秒最多
+            <input id="rlMax" type="number" min="1" max="1000000" step="1" inputmode="numeric" /> 条
+          </div>
+        </div>
+        <div>
+          <label for="rlScope">计数范围</label>
+          <select id="rlScope">
+            <option value="ip">按 IP（按真实 IP 分别计数）</option>
+            <option value="global">全站合计</option>
+          </select>
+        </div>
+      </div>
+      <label class="switch" style="margin:0"><input id="rlExempt" type="checkbox" /><span class="track"></span><span class="label">IP 白名单不限速</span></label>
+    </div>
+
+    <div class="card">
+      <div class="row" style="justify-content:flex-end">
+        <button id="btnDefaults" class="secondary" type="button" disabled>填入默认值</button>
+        <button id="btnReload" class="secondary" type="button" disabled>撤销修改</button>
+        <button id="btnSave" type="button" disabled>保存并生效</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h2>我的访问检测</h2>
+          <p class="muted" style="margin:0">用当前已生效的规则评估你这次请求（后台本身不受限制）。</p>
+        </div>
+        <button id="btnCheck" class="secondary" type="button">检测</button>
+      </div>
+      <dl id="checkResult" class="kv"></dl>
+    </div>
+  </div>
+
+  <script src="common.js"></script>
+  <script>
+    let defaults = null;
+    const SERVER_NAMES = {
+      '80.251.212.10': 'bwh8', '100.95.91.5': 'bwh8 tailscale', '179.253.236.72': 'dmit01',
+      '179.255.115.142': 'dmit02', '207.56.22.48': 'hehk03', '104.238.220.50': 'v99'
+    };
+    const REASONS = {
+      disabled: '规则关闭', ip: 'IP 白名单', ua: 'UA 白名单', country: '国家放行',
+      no_country: '无国家头放行', blacklist: 'IP 黑名单', denied: '拒绝'
+    };
+
+    const RL_FALLBACK = { enabled: false, scope: 'ip', window_sec: 10, max: 100, exempt_ip_whitelist: true };
+
+    function parseIntIn(v, min, max) {
+      const s = String(v).trim();
+      if (!/^\d+$/.test(s)) return null;
+      const n = parseInt(s, 10);
+      return n >= min && n <= max ? n : null;
+    }
+
+    function splitList(s) { return s.split(/[\s,，]+/).map(x => x.trim()).filter(Boolean); }
+    function splitLines(s) {
+      return s.split('\n').map(x => x.replace(/#.*$/, '').trim()).filter(Boolean);
+    }
+    function updateBlockCount() {
+      const n = splitLines($('blockIps').value).length;
+      $('blockCount').textContent = n ? `${n} 条` : '未设置';
+    }
+
+    function fill(c) {
+      $('enabled').checked = !!c.enabled;
+      $('allowNoCountry').checked = !!c.allow_no_country;
+      $('countries').value = (c.countries || []).join(', ');
+      $('ips').value = (c.ips || []).map(ip => SERVER_NAMES[ip] ? `${ip}  # ${SERVER_NAMES[ip]}` : ip).join('\n');
+      $('uas').value = (c.uas || []).join('\n');
+      $('blockIps').value = (c.block_ips || []).join('\n');
+      updateBlockCount();
+      const rl = Object.assign({}, RL_FALLBACK, (defaults && defaults.rate_limit) || {}, { enabled: false }, c.rate_limit || {});
+      $('rlEnabled').checked = !!rl.enabled;
+      $('rlWindow').value = rl.window_sec;
+      $('rlMax').value = rl.max;
+      $('rlScope').value = rl.scope === 'global' ? 'global' : 'ip';
+      $('rlExempt').checked = !!rl.exempt_ip_whitelist;
+      $('updatedAt').textContent = c.updated_at && !c.updated_at.startsWith('0001')
+        ? '上次保存：' + fmtTime(c.updated_at) : '使用默认规则（尚未保存）';
+    }
+
+    async function load() {
+      const data = await api('GET', '/api/ipguard');
+      defaults = data.defaults;
+      fill(data.config);
+      ['btnDefaults', 'btnReload', 'btnSave'].forEach(id => { $(id).disabled = false; });
+    }
+
+    $('btnSave').onclick = async () => {
+      const windowSec = parseIntIn($('rlWindow').value, 1, 3600);
+      const max = parseIntIn($('rlMax').value, 1, 1000000);
+      if (windowSec === null) { toast('限速窗口秒数需为 1–3600 的整数', false); return; }
+      if (max === null) { toast('限速最多请求数需为 1–1000000 的整数', false); return; }
+      const body = {
+        enabled: $('enabled').checked,
+        allow_no_country: $('allowNoCountry').checked,
+        countries: splitList($('countries').value),
+        ips: splitLines($('ips').value),
+        uas: splitLines($('uas').value),
+        block_ips: splitLines($('blockIps').value),
+        rate_limit: {
+          enabled: $('rlEnabled').checked,
+          scope: $('rlScope').value === 'global' ? 'global' : 'ip',
+          window_sec: windowSec,
+          max: max,
+          exempt_ip_whitelist: $('rlExempt').checked
+        }
+      };
+      const tooWide = body.block_ips.find(x => /\/0$/.test(x));
+      if (tooWide) {
+        toast(`黑名单「${tooWide}」会屏蔽全部地址，请改用更小的网段`, false);
+        return;
+      }
+      if (body.enabled && !body.countries.length && !body.ips.length && !body.uas.length && !body.allow_no_country) {
+        toast('当前规则会拒绝所有业务请求，请至少保留一项放行条件', false);
+        return;
+      }
+      $('btnSave').disabled = true;
+      try {
+        const data = await api('PUT', '/api/ipguard', body);
+        fill(data.config);
+        toast('已保存并生效', true);
+      } catch (e) {
+        toast(e.message, false);
+      } finally {
+        $('btnSave').disabled = false;
+      }
+    };
+    $('btnDefaults').onclick = () => { if (defaults) { fill(Object.assign({}, defaults, { updated_at: '' })); toast('已填入默认值，点「保存并生效」应用', true); } };
+    $('btnReload').onclick = () => load().then(() => toast('已恢复为当前生效配置', true)).catch(e => toast(e.message, false));
+
+    $('blockIps').addEventListener('input', updateBlockCount);
+
+    $('btnCheck').onclick = async () => {
+      try {
+        const d = await api('GET', '/api/ipguard/check');
+        const verdict = d.allow ? '<span class="pill ok">放行</span>' : '<span class="pill err">403</span>';
+        $('checkResult').innerHTML = `
+          <dt>结果</dt><dd>${verdict} ${escapeHtml(REASONS[d.reason] || d.reason)}</dd>
+          <dt>真实 IP</dt><dd class="mono">${escapeHtml(d.ip)}</dd>
+          <dt>国家</dt><dd>${escapeHtml(d.country || '-')}</dd>
+          <dt>对端可信</dt><dd>${d.trusted_peer ? '是' : '否'}</dd>
+          <dt>User-Agent</dt><dd class="muted">${escapeHtml(d.ua)}</dd>`;
+      } catch (e) { toast(e.message, false); }
+    };
+
+    if (requireToken()) {
+      renderNav('ipguard.html');
+      load().catch(e => toast(e.message, false));
+    }
+  </script>
+</body>
+</html>

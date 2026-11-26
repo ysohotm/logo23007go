@@ -1,0 +1,14 @@
+# Binaries
+/logo23007go
+*.exe
+*.test
+*.out
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Local env
+.env
+*.log
