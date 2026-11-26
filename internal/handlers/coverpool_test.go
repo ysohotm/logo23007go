@@ -98,7 +98,11 @@ func TestCoverPoolFirstImageAndBackgroundFill(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	scheduler := coverpool.NewScheduler(ctx, pool, 1, 8, generator, nil)
-	h := &Home{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Creater: c, Pool: pool, PoolConfig: coverpool.NewConfig(nil, nil), PoolScheduler: scheduler, ImageSem: make(chan struct{}, 1)}
+	poolCfg := coverpool.NewConfig(nil, nil)
+	if err := poolCfg.Set(context.Background(), coverpool.Settings{Count: 10, Sizes: [][2]int{{240, 300}}}); err != nil {
+		t.Fatal(err)
+	}
+	h := &Home{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Creater: c, Pool: pool, PoolConfig: poolCfg, PoolScheduler: scheduler, ImageSem: make(chan struct{}, 1)}
 	req := httptest.NewRequest(http.MethodGet, "/home/image?text=测试关键词&width=240&height=300", nil)
 	req.Header.Set("Accept", "image/webp")
 	rec := httptest.NewRecorder()
@@ -153,7 +157,11 @@ func TestCachedCoverBypassesImageSlotAndPreservesFormat(t *testing.T) {
 	}
 	sem := make(chan struct{}, 1)
 	sem <- struct{}{}
-	h := &Home{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Creater: &logo.Creater{}, Pool: pool, PoolConfig: coverpool.NewConfig(nil, nil), ImageSem: sem, ImageWait: time.Millisecond}
+	poolCfg := coverpool.NewConfig(nil, nil)
+	if err := poolCfg.Set(context.Background(), coverpool.Settings{Count: 10, Sizes: [][2]int{{240, 300}}}); err != nil {
+		t.Fatal(err)
+	}
+	h := &Home{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Creater: &logo.Creater{}, Pool: pool, PoolConfig: poolCfg, ImageSem: sem, ImageWait: time.Millisecond}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/home/image?text=%E7%BC%93%E5%AD%98%E5%85%B3%E9%94%AE%E8%AF%8D&width=240&height=300", nil)
 	h.Image(rec, req)
@@ -184,6 +192,50 @@ func TestCoverPoolSpecsDoNotShareImages(t *testing.T) {
 	}
 	if err := pool.Put(coverpool.Spec{Text: "背景", Width: 240, Height: 300, Background: "cover.jpg", Format: coverpool.FormatJPEG}, 0, jpeg); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestNonAllowlistedSizeSkipsPool(t *testing.T) {
+	root := t.TempDir()
+	fontsDir := filepath.Join(root, "app_data", "fonts")
+	imagesDir := filepath.Join(root, "app_data", "images")
+	if err := os.MkdirAll(fontsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(imagesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fontPath, err := filepath.Abs(filepath.Join("..", "..", "app_data", "fonts", "msyhbd.ttf"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	imagePath, err := filepath.Abs(filepath.Join("..", "..", "app_data", "images", "sample.jpg"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(fontPath, filepath.Join(fontsDir, "msyhbd.ttf")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(imagePath, filepath.Join(imagesDir, "sample.jpg")); err != nil {
+		t.Fatal(err)
+	}
+	c, err := logo.NewCreater(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := coverpool.NewPool(filepath.Join(root, "covers"))
+	poolCfg := coverpool.NewConfig(nil, nil) // default only 600x800
+	h := &Home{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Creater: c, Pool: pool, PoolConfig: poolCfg, ImageSem: make(chan struct{}, 1)}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/home/image?text=非白名单尺寸&width=240&height=300", nil)
+	req.Header.Set("Accept", "image/webp")
+	h.Image(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d", rec.Code)
+	}
+	spec := coverpool.Spec{Text: "非白名单尺寸", Width: 240, Height: 300, Format: coverpool.FormatWebP}
+	if n, err := pool.Count(spec); err != nil || n != 0 {
+		t.Fatalf("non-allowlisted size should not write pool: count=%d err=%v", n, err)
 	}
 }
 

@@ -130,7 +130,7 @@ func main() {
 		var poolCtx context.Context
 		poolCtx, poolCancel = context.WithCancel(context.Background())
 		h.PoolScheduler = coverpool.NewScheduler(poolCtx, pool, envInt("COVER_POOL_WORKERS", 2), envInt("COVER_POOL_QUEUE", 256), h, logger)
-		logger.Info("cover pool", "dir", poolDir, "count", poolConfig.Count())
+		logger.Info("cover pool", "dir", poolDir, "count", poolConfig.Count(), "sizes", coverpool.FormatSizes(poolConfig.Sizes()))
 	}
 
 	mux := http.NewServeMux()

@@ -15,12 +15,23 @@ import (
 )
 
 type fakeCoverPoolStore struct {
-	count int
+	settings coverpool.Settings
 }
 
-func (f *fakeCoverPoolStore) Get(context.Context) (int, error) { return f.count, nil }
-func (f *fakeCoverPoolStore) Set(_ context.Context, count int) error {
-	f.count = count
+func (f *fakeCoverPoolStore) Get(context.Context) (coverpool.Settings, error) {
+	if f.settings.Count == 0 && len(f.settings.Sizes) == 0 {
+		return coverpool.DefaultSettings(), nil
+	}
+	return coverpool.Settings{
+		Count: f.settings.Count,
+		Sizes: append([][2]int(nil), f.settings.Sizes...),
+	}, nil
+}
+func (f *fakeCoverPoolStore) Set(_ context.Context, settings coverpool.Settings) error {
+	f.settings = coverpool.Settings{
+		Count: settings.Count,
+		Sizes: append([][2]int(nil), settings.Sizes...),
+	}
 	return nil
 }
 
@@ -354,29 +365,41 @@ func TestCoverPoolConfig(t *testing.T) {
 	}
 	tok := setupToken(t, mux)
 
-	assertCount := func(method string, body any, want int) {
+	assertConfig := func(method string, body any, wantCount int, wantSizes ...string) {
 		t.Helper()
 		code, out := do(t, mux, method, "/api/cover-pool", tok, body)
 		config, _ := out["config"].(map[string]any)
-		if code != http.StatusOK || out["ok"] != true || config["count"] != float64(want) {
-			t.Fatalf("%s cover pool: %d %v, want count %d", method, code, out, want)
+		if code != http.StatusOK || out["ok"] != true || config["count"] != float64(wantCount) {
+			t.Fatalf("%s cover pool: %d %v, want count %d", method, code, out, wantCount)
+		}
+		gotSizes, _ := config["sizes"].([]any)
+		if len(gotSizes) != len(wantSizes) {
+			t.Fatalf("%s sizes = %v, want %v", method, gotSizes, wantSizes)
+		}
+		for i, want := range wantSizes {
+			if gotSizes[i] != want {
+				t.Fatalf("%s sizes[%d] = %v, want %s", method, i, gotSizes[i], want)
+			}
 		}
 	}
-	assertCount("GET", nil, 10)
-	assertCount("PUT", map[string]any{"count": 20}, 20)
-	if store.count != 20 {
-		t.Fatalf("stored count = %d, want 20", store.count)
+	assertConfig("GET", nil, 10, "600x800")
+	assertConfig("PUT", map[string]any{"count": 20, "sizes": []string{"600x800", "300x400"}}, 20, "600x800", "300x400")
+	if store.settings.Count != 20 || len(store.settings.Sizes) != 2 {
+		t.Fatalf("stored = %+v", store.settings)
 	}
-	assertCount("GET", nil, 20)
+	assertConfig("GET", nil, 20, "600x800", "300x400")
 
 	for _, count := range []int{0, 101} {
-		code, out := do(t, mux, "PUT", "/api/cover-pool", tok, map[string]any{"count": count})
+		code, out := do(t, mux, "PUT", "/api/cover-pool", tok, map[string]any{"count": count, "sizes": []string{"600x800"}})
 		err, _ := out["error"].(string)
 		if code != http.StatusBadRequest || !strings.Contains(err, "1") || !strings.Contains(err, "100") {
 			t.Fatalf("count %d should be rejected: %d %v", count, code, out)
 		}
 	}
-	assertCount("GET", nil, 20)
+	if code, out := do(t, mux, "PUT", "/api/cover-pool", tok, map[string]any{"count": 10, "sizes": []string{"bad"}}); code != http.StatusBadRequest || out["error"] == nil {
+		t.Fatalf("bad size should 400: %d %v", code, out)
+	}
+	assertConfig("GET", nil, 20, "600x800", "300x400")
 }
 
 func TestCoverPoolConfigUnavailable(t *testing.T) {

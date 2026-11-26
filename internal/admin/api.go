@@ -3,6 +3,7 @@ package admin
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -238,7 +239,7 @@ func (a *API) handleGetCoverPool(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "关键词图片池配置暂不可用")
 		return
 	}
-	writeCoverPoolConfig(w, a.CoverPool.Count())
+	writeCoverPoolConfig(w, a.CoverPool.Snapshot())
 }
 
 func (a *API) handlePutCoverPool(w http.ResponseWriter, r *http.Request) {
@@ -250,7 +251,8 @@ func (a *API) handlePutCoverPool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Count int `json:"count"`
+		Count int      `json:"count"`
+		Sizes []string `json:"sizes"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
@@ -259,17 +261,45 @@ func (a *API) handlePutCoverPool(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "每个关键词的图片数量需为 1-100 的整数")
 		return
 	}
-	if err := a.CoverPool.Set(r.Context(), body.Count); err != nil {
+	sizes, err := parseCoverPoolSizeList(body.Sizes)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := a.CoverPool.Set(r.Context(), coverpool.Settings{Count: body.Count, Sizes: sizes}); err != nil {
+		if strings.Contains(err.Error(), "outside") || strings.Contains(err.Error(), "invalid") || strings.Contains(err.Error(), "too many") || strings.Contains(err.Error(), "too large") {
+			writeErr(w, http.StatusBadRequest, "关键词图片池配置无效: "+err.Error())
+			return
+		}
 		writeErr(w, http.StatusInternalServerError, "保存关键词图片池配置失败")
 		return
 	}
-	writeCoverPoolConfig(w, a.CoverPool.Count())
+	writeCoverPoolConfig(w, a.CoverPool.Snapshot())
 }
 
-func writeCoverPoolConfig(w http.ResponseWriter, count int) {
+func parseCoverPoolSizeList(parts []string) ([][2]int, error) {
+	if len(parts) == 0 {
+		return nil, nil
+	}
+	joined := strings.Join(parts, ",")
+	sizes, err := coverpool.ParseSizes(joined)
+	if err != nil {
+		return nil, fmt.Errorf("尺寸格式需为 WIDTHxHEIGHT，例如 600x800")
+	}
+	return sizes, nil
+}
+
+func writeCoverPoolConfig(w http.ResponseWriter, settings coverpool.Settings) {
+	sizes := make([]string, 0, len(settings.Sizes))
+	for _, size := range settings.Sizes {
+		sizes = append(sizes, fmt.Sprintf("%dx%d", size[0], size[1]))
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":     true,
-		"config": map[string]int{"count": count},
+		"ok": true,
+		"config": map[string]any{
+			"count": settings.Count,
+			"sizes": sizes,
+		},
 	})
 }
 

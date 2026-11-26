@@ -7,12 +7,13 @@
   <title>关键词图片池 · logo23007 后台</title>
   <link rel="stylesheet" href="common.css" />
   <style>
-    input[type=number] {
-      width: 160px; padding: 10px 14px; border-radius: 12px;
+    input[type=number], textarea {
+      width: 100%; max-width: 420px; padding: 10px 14px; border-radius: 12px;
       border: 1px solid var(--border); background: var(--input); color: var(--text);
       font: inherit; transition: all .3s ease-in-out;
     }
-    input[type=number]:hover { border-color: var(--accent); }
+    input[type=number]:hover, textarea:hover { border-color: var(--accent); }
+    textarea { min-height: 88px; resize: vertical; }
     .actions { margin-top: 20px; justify-content: flex-end; }
     .notes { margin: 16px 0 0; padding-left: 20px; }
   </style>
@@ -23,9 +24,11 @@
 
     <form id="form" class="card" style="max-width:640px" autocomplete="off">
       <h2>关键词图片池</h2>
-      <p class="muted" style="margin:0 0 20px">设置每个关键词随机使用的图片数量，默认 10 张，可设置为 1–100 张；保存后立即生效。</p>
+      <p class="muted" style="margin:0 0 20px">仅对下方尺寸做预生成与随机返回；其它尺寸仍按请求实时生成。默认尺寸为 600×800。</p>
       <label for="count">每个关键词的图片数量</label>
       <input id="count" type="number" min="1" max="100" step="1" inputmode="numeric" required />
+      <label for="sizes">启用预生成 / 随机的尺寸</label>
+      <textarea id="sizes" placeholder="每行一个，例如&#10;600x800&#10;300x400" required></textarea>
       <div class="row actions">
         <button id="btnSave" type="submit">保存并生效</button>
       </div>
@@ -34,8 +37,9 @@
     <div class="card" style="max-width:640px">
       <h2>使用说明</h2>
       <ul class="notes muted">
-        <li>首图立即返回，其余图片由后台补齐。</li>
-        <li>减小数量只影响后续随机范围，不删除已生成的历史图片。</li>
+        <li>只有白名单尺寸会建池：首图立即返回，其余后台补齐后随机。</li>
+        <li>未在列表中的尺寸不预生成、不随机，每次实时出图。</li>
+        <li>减小数量或删掉某个尺寸，不删除已生成的历史文件。</li>
         <li>Cloudflare 缓存命中期间直接返回已缓存图片，不会重新随机。</li>
       </ul>
     </div>
@@ -45,6 +49,14 @@
   <script>
     function fill(config) {
       $('count').value = config.count;
+      $('sizes').value = (config.sizes || []).join('\n');
+    }
+
+    function parseSizes(text) {
+      return String(text || '')
+        .split(/[\n,]+/)
+        .map((s) => s.trim())
+        .filter(Boolean);
     }
 
     async function load() {
@@ -55,13 +67,18 @@
     $('form').onsubmit = async (e) => {
       e.preventDefault();
       const count = Number($('count').value);
+      const sizes = parseSizes($('sizes').value);
       if (!Number.isInteger(count) || count < 1 || count > 100) {
         toast('每个关键词的图片数量需为 1–100 的整数', false);
         return;
       }
+      if (!sizes.length) {
+        toast('请至少填写一个尺寸，例如 600x800', false);
+        return;
+      }
       $('btnSave').disabled = true;
       try {
-        const data = await api('PUT', '/api/cover-pool', { count });
+        const data = await api('PUT', '/api/cover-pool', { count, sizes });
         fill(data.config);
         toast('已保存并生效', true);
       } catch (err) {

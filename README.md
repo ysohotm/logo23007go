@@ -38,9 +38,9 @@ go run .
 
 ## 关键词封面池与 Cloudflare 缓存
 
-`/home/image`、`/vod/{text}` 与 `/home/imagekey` 会保存规范化后的关键词及其尺寸、背景和输出格式。首次请求同步生成一张并返回，后台补齐到配置数量（默认 10，可在后台「封面图片池」设置为 1–100）；之后从本地成品池随机读取。增大数量后由后续访问补齐，减小数量不删除历史文件。补图共享正常生图并发限制，worker 数默认 2，队列上限默认 256。
+`/home/image`、`/vod/{text}` 与 `/home/imagekey` 仅对后台白名单尺寸做成品池：首次同步生成一张并返回，后台补齐到配置数量（默认 10，可设 1–100），之后随机读取。默认白名单为 `600x800`（未带尺寸后缀时的默认封面）；其它尺寸仍实时生成、不预生成。增大数量或新增尺寸后由后续访问补齐；减小数量或删尺寸不删除历史文件。补图共享正常生图并发限制，worker 默认 2，队列默认 256。
 
-成品保存在 `app_data/cache/covers/<哈希>/`，含 `meta.json` 和图片文件。设置 `COVER_POOL_DIR=off` 可关闭成品池；`COVER_POOL_WORKERS`、`COVER_POOL_QUEUE` 可调整后台补图。
+成品保存在 `app_data/cache/covers/<哈希>/`。`COVER_POOL_DIR=off` 可关闭成品池；`COVER_POOL_WORKERS`、`COVER_POOL_QUEUE` 可调。
 
 成功封面响应带：
 

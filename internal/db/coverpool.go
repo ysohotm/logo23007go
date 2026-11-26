@@ -8,43 +8,79 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
+
+	"logo23007go/internal/coverpool"
 )
 
-// CoverPoolStore 保存封面池的全局数量配置。
+// CoverPoolStore 保存封面池的全局配置（数量 + 尺寸白名单）。
 type CoverPoolStore struct {
 	Coll *mongo.Collection
 }
 
-// Get 返回 1 到 100 的封面池数量；尚无配置时使用默认值 10。
-func (s *CoverPoolStore) Get(ctx context.Context) (int, error) {
-	var config struct {
-		Count int `bson:"count"`
-	}
-	err := s.Coll.FindOne(ctx, bson.M{"_id": "global"}).Decode(&config)
-	if err == mongo.ErrNoDocuments {
-		return 10, nil
-	}
-	if err != nil {
-		return 0, err
-	}
-	if config.Count < 1 || config.Count > 100 {
-		return 0, fmt.Errorf("coverpool: invalid count %d", config.Count)
-	}
-	return config.Count, nil
+type coverPoolDoc struct {
+	Count     int       `bson:"count"`
+	Sizes     []sizeDoc `bson:"sizes,omitempty"`
+	UpdatedAt time.Time `bson:"updated_at,omitempty"`
 }
 
-// Set 更新封面池数量，并记录本次配置的 UTC 修改时间。
-func (s *CoverPoolStore) Set(ctx context.Context, count int) error {
-	if count < 1 || count > 100 {
-		return fmt.Errorf("coverpool: invalid count %d", count)
+type sizeDoc struct {
+	Width  int `bson:"w"`
+	Height int `bson:"h"`
+}
+
+// Get 返回封面池配置；尚无文档时使用默认值。旧文档只有 count 时补默认尺寸。
+func (s *CoverPoolStore) Get(ctx context.Context) (coverpool.Settings, error) {
+	var doc coverPoolDoc
+	err := s.Coll.FindOne(ctx, bson.M{"_id": "global"}).Decode(&doc)
+	if err == mongo.ErrNoDocuments {
+		return coverpool.DefaultSettings(), nil
 	}
-	_, err := s.Coll.UpdateOne(ctx,
+	if err != nil {
+		return coverpool.Settings{}, err
+	}
+	settings := coverpool.Settings{Count: doc.Count, Sizes: sizesFromDoc(doc.Sizes)}
+	if settings.Count == 0 {
+		settings.Count = 10
+	}
+	return coverpool.NormalizeSettings(settings)
+}
+
+// Set 校验并 upsert 封面池配置。
+func (s *CoverPoolStore) Set(ctx context.Context, settings coverpool.Settings) error {
+	normalized, err := coverpool.NormalizeSettings(settings)
+	if err != nil {
+		return err
+	}
+	_, err = s.Coll.UpdateOne(ctx,
 		bson.M{"_id": "global"},
 		bson.M{"$set": bson.M{
-			"count":      count,
+			"count":      normalized.Count,
+			"sizes":      sizesToDoc(normalized.Sizes),
 			"updated_at": time.Now().UTC(),
 		}},
 		options.Update().SetUpsert(true),
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("coverpool store: %w", err)
+	}
+	return nil
+}
+
+func sizesFromDoc(in []sizeDoc) [][2]int {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([][2]int, 0, len(in))
+	for _, s := range in {
+		out = append(out, [2]int{s.Width, s.Height})
+	}
+	return out
+}
+
+func sizesToDoc(in [][2]int) []sizeDoc {
+	out := make([]sizeDoc, 0, len(in))
+	for _, s := range in {
+		out = append(out, sizeDoc{Width: s[0], Height: s[1]})
+	}
+	return out
 }

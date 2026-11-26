@@ -1,31 +1,29 @@
 package db
 
 import (
-	"context"
 	"testing"
+
+	"logo23007go/internal/coverpool"
 )
 
-// 配置服务可直接持有 *CoverPoolStore，无需为 Mongo 额外抽象接口。
-type coverPoolConfigStore interface {
-	Get(context.Context) (int, error)
-	Set(context.Context, int) error
+func TestCoverPoolStoreImplementsInterface(t *testing.T) {
+	var _ coverpool.Store = (*CoverPoolStore)(nil)
 }
 
-var _ coverPoolConfigStore = (*CoverPoolStore)(nil)
-
-func TestCoverPoolStoreContract(t *testing.T) {
-	// nil receiver 可验证方法集契约；实际读写与错误传递由 Mongo 集成测试覆盖。
-	var store coverPoolConfigStore = (*CoverPoolStore)(nil)
-	if store == nil {
-		t.Fatal("CoverPoolStore does not satisfy coverPoolConfigStore")
+func TestCoverPoolStoreSetRejectsInvalidSettings(t *testing.T) {
+	store := &CoverPoolStore{}
+	if err := store.Set(nil, coverpool.Settings{Count: 0, Sizes: coverpool.DefaultSizes()}); err == nil {
+		t.Fatal("expected invalid count error")
+	}
+	if err := store.Set(nil, coverpool.Settings{Count: 10, Sizes: [][2]int{{-1, 100}}}); err == nil {
+		t.Fatal("expected invalid size error")
 	}
 }
 
-func TestCoverPoolStoreSetRejectsInvalidCount(t *testing.T) {
-	store := &CoverPoolStore{}
-	for _, count := range []int{-1, 0, 101} {
-		if err := store.Set(context.Background(), count); err == nil {
-			t.Errorf("Set(%d) returned nil error", count)
-		}
+func TestSizesDocRoundTrip(t *testing.T) {
+	in := [][2]int{{600, 800}, {300, 400}}
+	got := sizesFromDoc(sizesToDoc(in))
+	if len(got) != 2 || got[0] != in[0] || got[1] != in[1] {
+		t.Fatalf("roundtrip = %v", got)
 	}
 }

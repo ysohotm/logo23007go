@@ -20,6 +20,11 @@ func (h *Home) poolEnabled() bool {
 	return h != nil && h.Pool != nil && h.Creater != nil
 }
 
+// poolForSize is true only for admin-allowlisted sizes (default 600x800).
+func (h *Home) poolForSize(width, height int) bool {
+	return h.poolEnabled() && h.PoolConfig != nil && h.PoolConfig.Allows(width, height)
+}
+
 func (h *Home) poolSpec(text string, width, height int, file string, format logo.OutputFormat) coverpool.Spec {
 	return coverpool.Spec{Text: text, Width: width, Height: height, Background: file, Format: coverpool.ImageFormat(format)}
 }
@@ -27,6 +32,9 @@ func (h *Home) poolSpec(text string, width, height int, file string, format logo
 // servePoolHit runs before the image semaphore in Image and ImageKey. Reading
 // a finished cover is cheap and must not wait behind CPU-heavy generation.
 func (h *Home) servePoolHit(w http.ResponseWriter, text string, width, height int, file string, format logo.OutputFormat) ([]byte, bool) {
+	if !h.poolForSize(width, height) {
+		return nil, false
+	}
 	spec := h.poolSpec(text, width, height, file, format)
 	data, ok, err := h.Pool.Get(spec)
 	if err != nil {
@@ -47,7 +55,7 @@ func (h *Home) writePooledResult(w http.ResponseWriter, text string, width, heig
 }
 
 func (h *Home) storePooledResult(w http.ResponseWriter, text string, width, height int, file string, format logo.OutputFormat, data []byte) error {
-	if h.poolEnabled() {
+	if h.poolForSize(width, height) {
 		spec := h.poolSpec(text, width, height, file, format)
 		if err := h.Pool.Put(spec, 0, data); err != nil {
 			return err
