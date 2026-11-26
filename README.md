@@ -75,22 +75,38 @@ Vary: Accept
 
 ## Docker
 
-镜像已发布到 GHCR：
+镜像已发布到 GHCR。**把整个 `app_data` 挂到宿主机即可**，关键词成品池和背景缓存都在其下，不必再单独挂 `cache`：
+
+| 容器路径 | 默认宿主机（v99） | 说明 |
+|---|---|---|
+| `/app/app_data` | `/data/logomaker23007` | 字体、背景图、全部缓存 |
+| `…/cache/covers` | `…/cache/covers` | 关键词成品池（自动创建） |
+| `…/cache/bg` | `…/cache/bg` | 背景缩放缓存（自动创建） |
 
 ```bash
-# 拉取
-docker pull ghcr.io/ysohotm/logo23007/logo23007go:latest
+# 预建目录（首次）
+mkdir -p /data/logomaker23007/{fonts,images,cache/covers,cache/bg}
 
-# 运行
-docker run --network=host \
+# 拉取并运行（host 网络 + 东八区）
+docker pull ghcr.io/ysohotm/logo23007/logo23007go:latest
+docker run -d --name logo23107 --network host --restart always \
   -e DBCONN='mongodb://...' \
-  -e DBNAME=cachelogomaker \
-  -v "$PWD/app_data:/app/app_data" \
+  -e DBNAME=logo23107 \
+  -e TZ=Asia/Shanghai \
+  -e PORT=23107 \
+  -v /usr/share/zoneinfo/Asia/Shanghai:/etc/localtime:ro \
+  -v /data/logomaker23007:/app/app_data \
   ghcr.io/ysohotm/logo23007/logo23007go:latest
+
+# v99 一键滚动（继承旧容器 DBCONN、打回退 tag、预建 cache）
+# bash deploy/run-v99.sh
+# bash deploy/run-v99.sh 2026.1126.1010
 
 # 重新构建并推送
 ./pubdocker.sh ghcr
 ```
+
+可选环境变量：`COVER_POOL_DIR`（默认 `app_data/cache/covers`，`off` 关闭）、`COVER_POOL_WORKERS`、`BG_CACHE_DIR`。
 
 包地址：https://github.com/users/ysohotm/packages/container/package/logo23007%2Flogo23007go  
 （当前为 private，需登录 ghcr 后拉取）
