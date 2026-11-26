@@ -134,16 +134,17 @@ func (c *Collector) Sample() (Snapshot, error) {
 		if dt > 0 {
 			totalDelta := cpu.total - c.prevCPU.total
 			idleDelta := cpu.idle - c.prevCPU.idle
+			pct := 0.0
 			if totalDelta > 0 {
-				pct := (1 - float64(idleDelta)/float64(totalDelta)) * 100
+				pct = (1 - float64(idleDelta)/float64(totalDelta)) * 100
 				if pct < 0 {
 					pct = 0
 				}
 				if pct > 100 {
 					pct = 100
 				}
-				snap.CPUPercent = &pct
 			}
+			snap.CPUPercent = &pct
 			const sectorBytes = 512.0
 			readBps := float64(disk.sectorsRead-c.prevDisk.sectorsRead) * sectorBytes / dt
 			writeBps := float64(disk.sectorsWrite-c.prevDisk.sectorsWrite) * sectorBytes / dt

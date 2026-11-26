@@ -117,6 +117,7 @@ func main() {
 		pool = coverpool.NewPool(poolDir)
 	}
 	sizeStats := coverpool.NewSizeStats()
+	keywordStore := &db.CoverKeywordStore{Coll: ctrlDB.Collection("cover_keywords")}
 	h := &handlers.Home{
 		Logger:     logger,
 		Root:       root,
@@ -127,6 +128,7 @@ func main() {
 		Pool:       pool,
 		PoolConfig: poolConfig,
 		SizeStats:  sizeStats,
+		Keywords:   coverpool.NewKeywordTracker(keywordStore, logger),
 	}
 	var poolCancel context.CancelFunc
 	if pool != nil {
@@ -155,7 +157,6 @@ func main() {
 	fs := http.FileServer(http.Dir(filepath.Join(root, "wwwroot")))
 	mux.Handle("GET /static/", http.StripPrefix("/static/", fs))
 
-	keywordStore := &db.CoverKeywordStore{Coll: ctrlDB.Collection("cover_keywords")}
 	adminAPI := &admin.API{Auth: authStore, Guard: guard, CoverPool: poolConfig, Keywords: keywordStore, Pool: pool, Sys: sysmetrics.New(), SizeStats: sizeStats}
 	if pool != nil {
 		adminAPI.Prewarm = &coverpool.Prewarmer{

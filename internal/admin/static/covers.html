@@ -50,6 +50,17 @@
     </form>
 
     <div class="card" style="max-width:640px">
+      <h2>请求尺寸排行</h2>
+      <p class="muted" style="margin:0 0 12px">来自本进程真实出图请求，可刷新/清零；pooled=已在白名单</p>
+      <div class="row actions" style="margin-top:0; margin-bottom:12px; justify-content:flex-end">
+        <button id="btnRefreshSizeStats" type="button">刷新排行</button>
+        <button id="btnResetSizeStats" type="button">清零统计</button>
+      </div>
+      <div id="sizeStatsMeta" class="muted" style="margin-bottom:8px"></div>
+      <div id="sizeStatsList" class="kw-list"></div>
+    </div>
+
+    <div class="card" style="max-width:640px">
       <h2>手工添加关键词</h2>
       <p class="muted" style="margin:0 0 20px">固定输出 WebP；按上方已保存的尺寸白名单，为每个关键词后台补齐到配置数量。可多种尺寸。</p>
       <label for="keywords">关键词</label>
@@ -61,6 +72,8 @@
 
     <div class="card" style="max-width:640px">
       <h2>关键词进度</h2>
+      <p class="muted" style="margin:0 0 12px">含访问自动收集与手工添加</p>
+      <p class="muted" style="margin:0 0 12px">访问出图会自动登记新词到词库（不只手工添加）；进度按白名单尺寸统计磁盘池</p>
       <div class="row actions" style="margin-top:0; margin-bottom:12px; justify-content:flex-end">
         <button id="btnRefreshKeywords" type="button">刷新进度</button>
       </div>
@@ -68,19 +81,10 @@
     </div>
 
     <div class="card" style="max-width:640px">
-      <h2>请求尺寸排行</h2>
-      <p class="muted" style="margin:0 0 12px">进程内统计，重启清零；显示是否已在白名单（pooled）</p>
-      <div class="row actions" style="margin-top:0; margin-bottom:12px; justify-content:flex-end">
-        <button id="btnRefreshSizeStats" type="button">刷新排行</button>
-        <button id="btnResetSizeStats" type="button">清零统计</button>
-      </div>
-      <div id="sizeStatsMeta" class="muted" style="margin-bottom:8px"></div>
-      <div id="sizeStatsList" class="kw-list"></div>
-    </div>
-
-    <div class="card" style="max-width:640px">
       <h2>使用说明</h2>
       <ul class="notes muted">
+        <li>访问 <code>/home/image</code>、<code>/vod/...</code>、<code>/home/imagekey</code> 时会自动把关键词写入词库。</li>
+        <li>尺寸排行在后台本页可见（本进程真实出图请求，可刷新/清零）。</li>
         <li>只有白名单尺寸会建池：首图立即返回，其余后台补齐后随机。</li>
         <li>未在列表中的尺寸不预生成、不随机，每次实时出图。</li>
         <li>减小数量或删掉某个尺寸，不删除已生成的历史文件。</li>
@@ -130,7 +134,7 @@
         const data = await api('GET', '/api/cover-pool/keywords');
         const keywords = data.keywords || [];
         if (!keywords.length) {
-          list.innerHTML = '<p class="muted" style="margin:0">暂无登记关键词</p>';
+          list.innerHTML = '<p class="muted" style="margin:0">暂无关键词（访问出图或手工添加后会出现在此）</p>';
           return;
         }
         list.innerHTML = keywords.map((kw) => {
@@ -203,7 +207,7 @@
         const since = data.since ? `自 ${data.since}` : '';
         meta.textContent = `合计 ${total} 次${since ? ' · ' + since : ''}`;
         if (!sizes.length) {
-          list.innerHTML = '<p class="muted" style="margin:0">暂无请求记录</p>';
+          list.innerHTML = '<p class="muted" style="margin:0">暂无出图请求记录（可刷新）</p>';
           return;
         }
         list.innerHTML = sizes.map((sz) => {
