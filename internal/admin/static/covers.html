@@ -16,6 +16,21 @@
     textarea { min-height: 88px; resize: vertical; }
     .actions { margin-top: 20px; justify-content: flex-end; }
     .notes { margin: 16px 0 0; padding-left: 20px; }
+    .kw-list { display: flex; flex-direction: column; gap: 12px; margin-top: 4px; }
+    .kw-row {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
+      padding: 10px 0; border-bottom: 1px solid var(--border);
+    }
+    .kw-row:last-child { border-bottom: none; }
+    .kw-text { font-weight: 500; min-width: 4em; }
+    .kw-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .kw-chip {
+      font-size: .8rem; font-variant-numeric: tabular-nums;
+      padding: 3px 10px; border-radius: 8px;
+      border: 1px solid var(--border); background: var(--input);
+    }
+    .kw-chip.done { color: var(--muted); opacity: .85; }
+    .kw-chip.todo { color: var(--text); font-weight: 600; border-color: var(--accent); }
   </style>
 </head>
 <body>
@@ -42,6 +57,14 @@
       <div class="row actions">
         <button id="btnGenerate" type="button">生成备用图片</button>
       </div>
+    </div>
+
+    <div class="card" style="max-width:640px">
+      <h2>关键词进度</h2>
+      <div class="row actions" style="margin-top:0; margin-bottom:12px; justify-content:flex-end">
+        <button id="btnRefreshKeywords" type="button">刷新进度</button>
+      </div>
+      <div id="keywordList" class="kw-list"></div>
     </div>
 
     <div class="card" style="max-width:640px">
@@ -77,9 +100,39 @@
         .filter(Boolean);
     }
 
+    function escapeHtml(s) {
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+    }
+
     async function load() {
       const data = await api('GET', '/api/cover-pool');
       fill(data.config);
+    }
+
+    async function loadKeywords() {
+      const list = $('keywordList');
+      try {
+        const data = await api('GET', '/api/cover-pool/keywords');
+        const keywords = data.keywords || [];
+        if (!keywords.length) {
+          list.innerHTML = '<p class="muted" style="margin:0">暂无登记关键词</p>';
+          return;
+        }
+        list.innerHTML = keywords.map((kw) => {
+          const chips = (kw.sizes || []).map((sz) => {
+            const done = (sz.count || 0) >= (sz.target || 0);
+            const cls = done ? 'kw-chip done' : 'kw-chip todo';
+            return `<span class="${cls}">${sz.w}×${sz.h} ${sz.count || 0}/${sz.target || 0}</span>`;
+          }).join('');
+          return `<div class="kw-row"><span class="kw-text">${escapeHtml(kw.text || '')}</span><span class="kw-chips">${chips}</span></div>`;
+        }).join('');
+      } catch (err) {
+        toast(err.message, false);
+      }
     }
 
     $('form').onsubmit = async (e) => {
@@ -117,6 +170,7 @@
         const data = await api('POST', '/api/cover-pool/generate', { keywords });
         const r = data.result || {};
         toast(`已入队 ${r.accepted || 0}，跳过 ${r.skipped || 0}，失败 ${r.failed || 0}`, true);
+        loadKeywords();
       } catch (err) {
         toast(err.message, false);
       } finally {
@@ -124,9 +178,14 @@
       }
     };
 
+    $('btnRefreshKeywords').onclick = () => {
+      loadKeywords().catch((e) => toast(e.message, false));
+    };
+
     if (requireToken()) {
       renderNav('covers.html');
       load().catch(e => toast(e.message, false));
+      loadKeywords().catch(e => toast(e.message, false));
     }
   </script>
 </body>

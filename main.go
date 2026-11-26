@@ -152,7 +152,8 @@ func main() {
 	fs := http.FileServer(http.Dir(filepath.Join(root, "wwwroot")))
 	mux.Handle("GET /static/", http.StripPrefix("/static/", fs))
 
-	adminAPI := &admin.API{Auth: authStore, Guard: guard, CoverPool: poolConfig}
+	keywordStore := &db.CoverKeywordStore{Coll: ctrlDB.Collection("cover_keywords")}
+	adminAPI := &admin.API{Auth: authStore, Guard: guard, CoverPool: poolConfig, Keywords: keywordStore, Pool: pool}
 	if pool != nil {
 		adminAPI.Prewarm = &coverpool.Prewarmer{
 			Config:    poolConfig,

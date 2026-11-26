@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,11 +16,19 @@ import (
 
 const sessionTTL = 7 * 24 * time.Hour
 
+// CoverKeywordRegistry stores manually added cover keywords for listing/status.
+type CoverKeywordRegistry interface {
+	UpsertMany(ctx context.Context, texts []string) error
+	List(ctx context.Context) ([]string, error)
+}
+
 type API struct {
 	Auth      AuthStore
 	Guard     *ipguard.Guard
 	CoverPool *coverpool.Config
 	Prewarm   *coverpool.Prewarmer
+	Keywords  CoverKeywordRegistry
+	Pool      *coverpool.Pool
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -79,6 +88,7 @@ func (a *API) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/cover-pool", a.handleGetCoverPool)
 	mux.HandleFunc("PUT /api/cover-pool", a.handlePutCoverPool)
 	mux.HandleFunc("POST /api/cover-pool/generate", a.handleGenerateCoverPool)
+	mux.HandleFunc("GET /api/cover-pool/keywords", a.handleListCoverKeywords)
 	mux.HandleFunc("GET /api/ipguard/stats", a.handleStats)
 	mux.HandleFunc("POST /api/ipguard/stats/reset", a.handleStatsReset)
 	mux.HandleFunc("GET /api/ipguard/check", a.handleCheck)
@@ -319,12 +329,40 @@ func (a *API) handleGenerateCoverPool(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &body) {
 		return
 	}
-	if len(coverpool.NormalizeKeywords(body.Keywords)) == 0 {
+	normalized := coverpool.NormalizeKeywords(body.Keywords)
+	if len(normalized) == 0 {
 		writeErr(w, http.StatusBadRequest, "请至少填写一个关键词")
 		return
 	}
+	if a.Keywords != nil {
+		if err := a.Keywords.UpsertMany(r.Context(), normalized); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
 	result := a.Prewarm.Enqueue(r.Context(), body.Keywords)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "result": result})
+}
+
+func (a *API) handleListCoverKeywords(w http.ResponseWriter, r *http.Request) {
+	if !a.authed(w, r) {
+		return
+	}
+	if a.CoverPool == nil {
+		writeErr(w, http.StatusServiceUnavailable, "关键词图片池配置暂不可用")
+		return
+	}
+	if a.Keywords == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "keywords": []any{}})
+		return
+	}
+	texts, err := a.Keywords.List(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	statuses := coverpool.StatusFor(a.Pool, a.CoverPool, texts)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "keywords": statuses})
 }
 
 func (a *API) handleStats(w http.ResponseWriter, r *http.Request) {

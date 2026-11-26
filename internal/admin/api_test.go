@@ -429,6 +429,33 @@ func (g *stubCoverGen) Generate(_ context.Context, spec coverpool.Spec, slot int
 	return g.pool.Put(spec, slot, testCoverWebP)
 }
 
+type fakeKeywords struct {
+	texts []string
+}
+
+func (f *fakeKeywords) UpsertMany(_ context.Context, texts []string) error {
+	seen := make(map[string]struct{}, len(f.texts))
+	for _, t := range f.texts {
+		seen[t] = struct{}{}
+	}
+	for _, t := range texts {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		if _, ok := seen[t]; ok {
+			continue
+		}
+		seen[t] = struct{}{}
+		f.texts = append(f.texts, t)
+	}
+	return nil
+}
+
+func (f *fakeKeywords) List(context.Context) ([]string, error) {
+	return append([]string(nil), f.texts...), nil
+}
+
 func TestCoverPoolGenerate(t *testing.T) {
 	muxUnauth := newTestMux()
 	if code, _ := do(t, muxUnauth, "POST", "/api/cover-pool/generate", "", map[string]any{"keywords": []string{"词"}}); code != http.StatusUnauthorized {
@@ -459,10 +486,13 @@ func TestCoverPoolGenerate(t *testing.T) {
 		cancel()
 		scheduler.Wait()
 	}()
+	kw := &fakeKeywords{}
 	mux := http.NewServeMux()
 	a := &API{
 		Auth:      &fakeAuth{sessions: map[string]bool{}},
 		CoverPool: cfg,
+		Keywords:  kw,
+		Pool:      pool,
 		Prewarm: &coverpool.Prewarmer{
 			Config:    cfg,
 			Pool:      pool,
@@ -493,6 +523,90 @@ func TestCoverPoolGenerate(t *testing.T) {
 	accepted, _ := result["accepted"].(float64)
 	if accepted < 1 {
 		t.Fatalf("result.accepted = %v, want >= 1", accepted)
+	}
+	if len(kw.texts) != 1 || kw.texts[0] != "词A" {
+		t.Fatalf("Keywords.UpsertMany = %v, want [词A]", kw.texts)
+	}
+}
+
+func TestCoverPoolKeywordsList(t *testing.T) {
+	muxUnauth := newTestMux()
+	if code, _ := do(t, muxUnauth, "GET", "/api/cover-pool/keywords", "", nil); code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated keywords list should be 401, got %d", code)
+	}
+
+	muxEmpty := http.NewServeMux()
+	aEmpty := &API{
+		Auth:      &fakeAuth{sessions: map[string]bool{}},
+		CoverPool: coverpool.NewConfig(&fakeCoverPoolStore{}, nil),
+	}
+	aEmpty.Mount(muxEmpty)
+	tokEmpty := setupToken(t, muxEmpty)
+	code, out := do(t, muxEmpty, "GET", "/api/cover-pool/keywords", tokEmpty, nil)
+	if code != http.StatusOK || out["ok"] != true {
+		t.Fatalf("empty keywords (nil registry): %d %v", code, out)
+	}
+	kws, _ := out["keywords"].([]any)
+	if len(kws) != 0 {
+		t.Fatalf("keywords = %v, want empty", kws)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	pool := coverpool.NewPool(t.TempDir())
+	store := &fakeCoverPoolStore{}
+	cfg := coverpool.NewConfig(store, nil)
+	if err := cfg.Set(ctx, coverpool.Settings{Count: 3, Sizes: [][2]int{{600, 800}}}); err != nil {
+		t.Fatal(err)
+	}
+	gen := &stubCoverGen{pool: pool}
+	scheduler := coverpool.NewScheduler(ctx, pool, 1, 8, gen, nil)
+	defer func() {
+		cancel()
+		scheduler.Wait()
+	}()
+	kw := &fakeKeywords{}
+	mux := http.NewServeMux()
+	a := &API{
+		Auth:      &fakeAuth{sessions: map[string]bool{}},
+		CoverPool: cfg,
+		Keywords:  kw,
+		Pool:      pool,
+		Prewarm: &coverpool.Prewarmer{
+			Config:    cfg,
+			Pool:      pool,
+			Scheduler: scheduler,
+			Generate:  gen,
+		},
+	}
+	a.Mount(mux)
+	tok := setupToken(t, mux)
+
+	code, out = do(t, mux, "POST", "/api/cover-pool/generate", tok, map[string]any{
+		"keywords": []string{"词B"},
+	})
+	if code != http.StatusOK || out["ok"] != true {
+		t.Fatalf("generate: %d %v", code, out)
+	}
+
+	code, out = do(t, mux, "GET", "/api/cover-pool/keywords", tok, nil)
+	if code != http.StatusOK || out["ok"] != true {
+		t.Fatalf("list keywords: %d %v", code, out)
+	}
+	list, _ := out["keywords"].([]any)
+	if len(list) != 1 {
+		t.Fatalf("keywords len = %d, want 1: %v", len(list), out)
+	}
+	item, _ := list[0].(map[string]any)
+	if item["text"] != "词B" {
+		t.Fatalf("keyword text = %v, want 词B", item["text"])
+	}
+	sizes, _ := item["sizes"].([]any)
+	if len(sizes) != 1 {
+		t.Fatalf("sizes = %v, want 1 entry", sizes)
+	}
+	sz, _ := sizes[0].(map[string]any)
+	if sz["w"] != float64(600) || sz["h"] != float64(800) || sz["target"] != float64(3) {
+		t.Fatalf("size progress = %v, want w=600 h=800 target=3", sz)
 	}
 }
 
