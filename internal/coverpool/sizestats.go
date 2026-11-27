@@ -20,6 +20,8 @@ type SizeStat struct {
 type SizeStats struct {
 	mu        sync.Mutex
 	counts    map[string]int64
+	poolHits  int64
+	liveOk    int64
 	startedAt time.Time
 }
 
@@ -47,6 +49,36 @@ func (s *SizeStats) Record(width, height int) {
 		return
 	}
 	s.counts[key]++
+}
+
+// RecordPoolHit 预生成池命中并成功写出一次。nil-safe。
+func (s *SizeStats) RecordPoolHit() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.poolHits++
+}
+
+// RecordLive 实时生成并成功写出一次（未走池命中）。nil-safe。
+func (s *SizeStats) RecordLive() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.liveOk++
+}
+
+// ServeCounts 返回本进程累计 poolHits、liveOk。nil → 0,0。
+func (s *SizeStats) ServeCounts() (poolHits, liveOk int64) {
+	if s == nil {
+		return 0, 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.poolHits, s.liveOk
 }
 
 // Snapshot returns total requests and sizes sorted by Count desc, then Width, Height asc.
@@ -85,6 +117,8 @@ func (s *SizeStats) Reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.counts = make(map[string]int64)
+	s.poolHits = 0
+	s.liveOk = 0
 	s.startedAt = time.Now()
 }
 

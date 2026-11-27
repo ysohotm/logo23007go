@@ -415,6 +415,7 @@ func (a *API) handleCoverSizeStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	total, items := a.SizeStats.Snapshot()
+	poolHits, liveOk := a.SizeStats.ServeCounts()
 	since := ""
 	if a.SizeStats != nil {
 		since = a.SizeStats.StartedAt().UTC().Format(time.RFC3339)
@@ -433,10 +434,12 @@ func (a *API) handleCoverSizeStats(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":    true,
-		"total": total,
-		"since": since,
-		"sizes": sizes,
+		"ok":        true,
+		"total":     total,
+		"since":     since,
+		"pool_hits": int(poolHits),
+		"live_ok":   int(liveOk),
+		"sizes":     sizes,
 	})
 }
 

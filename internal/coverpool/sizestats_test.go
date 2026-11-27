@@ -8,6 +8,8 @@ import (
 func TestSizeStatsNilSafe(t *testing.T) {
 	var s *SizeStats
 	s.Record(100, 200)
+	s.RecordPoolHit()
+	s.RecordLive()
 	total, items := s.Snapshot()
 	if total != 0 {
 		t.Fatalf("nil Snapshot total = %d, want 0", total)
@@ -17,6 +19,10 @@ func TestSizeStatsNilSafe(t *testing.T) {
 	}
 	if len(items) != 0 {
 		t.Fatalf("nil Snapshot len = %d, want 0", len(items))
+	}
+	poolHits, liveOk := s.ServeCounts()
+	if poolHits != 0 || liveOk != 0 {
+		t.Fatalf("nil ServeCounts = %d,%d, want 0,0", poolHits, liveOk)
 	}
 	s.Reset()
 	if !s.StartedAt().IsZero() {
@@ -96,6 +102,8 @@ func TestSizeStatsReset(t *testing.T) {
 	s := NewSizeStats()
 	started := s.StartedAt()
 	s.Record(10, 20)
+	s.RecordPoolHit()
+	s.RecordLive()
 	time.Sleep(2 * time.Millisecond)
 	s.Reset()
 	if !s.StartedAt().After(started) {
@@ -105,10 +113,37 @@ func TestSizeStatsReset(t *testing.T) {
 	if total != 0 || len(items) != 0 {
 		t.Fatalf("after Reset expected empty, got total=%d items=%v", total, items)
 	}
+	poolHits, liveOk := s.ServeCounts()
+	if poolHits != 0 || liveOk != 0 {
+		t.Fatalf("after Reset ServeCounts = %d,%d, want 0,0", poolHits, liveOk)
+	}
 	s.Record(10, 20)
 	total, items = s.Snapshot()
 	if total != 1 || len(items) != 1 || items[0].Count != 1 {
 		t.Fatalf("after Reset Record failed: total=%d items=%v", total, items)
+	}
+}
+
+func TestSizeStatsServeCounts(t *testing.T) {
+	s := NewSizeStats()
+	poolHits, liveOk := s.ServeCounts()
+	if poolHits != 0 || liveOk != 0 {
+		t.Fatalf("initial ServeCounts = %d,%d, want 0,0", poolHits, liveOk)
+	}
+	s.RecordPoolHit()
+	s.RecordPoolHit()
+	s.RecordLive()
+	s.RecordLive()
+	s.RecordLive()
+	// Record must not affect serve counts.
+	s.Record(100, 200)
+	poolHits, liveOk = s.ServeCounts()
+	if poolHits != 2 || liveOk != 3 {
+		t.Fatalf("ServeCounts = %d,%d, want 2,3", poolHits, liveOk)
+	}
+	total, _ := s.Snapshot()
+	if total != 1 {
+		t.Fatalf("Snapshot total = %d, want 1 (Record independent)", total)
 	}
 }
 

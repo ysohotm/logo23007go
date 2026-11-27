@@ -149,12 +149,17 @@
         <div class="card-head">
           <div>
             <h2>请求尺寸排行</h2>
-            <p class="muted" style="margin:0">本进程真实出图请求；pooled=已在白名单</p>
+            <p class="muted" style="margin:0">本进程累计；命中=直接返回池内预生成图；pooled=已在白名单</p>
           </div>
           <div class="row">
             <button id="btnRefreshSizeStats" type="button" class="secondary">刷新排行</button>
             <button id="btnResetSizeStats" type="button" class="secondary">清零统计</button>
           </div>
+        </div>
+        <div id="sizeStatsHits" class="stats-inline" style="margin-bottom:12px">
+          <div class="stat"><div class="num">—</div><div class="muted">预生成命中</div></div>
+          <div class="stat"><div class="num">—</div><div class="muted">实时生成</div></div>
+          <div class="stat"><div class="num">—</div><div class="muted">命中率</div></div>
         </div>
         <div id="sizeStatsMeta" class="muted" style="margin-bottom:8px"></div>
         <div id="sizeStatsList" class="kw-list"></div>
@@ -439,11 +444,20 @@
     async function loadSizeStats() {
       const list = $('sizeStatsList');
       const meta = $('sizeStatsMeta');
+      const hits = $('sizeStatsHits');
       try {
         const data = await api('GET', '/api/cover-pool/size-stats');
         const total = data.total || 0;
         const sizes = data.sizes || [];
         const since = data.since ? `自 ${data.since}` : '';
+        const poolHits = data.pool_hits || 0;
+        const liveOk = data.live_ok || 0;
+        const denom = poolHits + liveOk;
+        const hitRate = denom > 0 ? ((poolHits / denom) * 100).toFixed(1) + '%' : '—';
+        hits.innerHTML =
+          `<div class="stat"><div class="num">${poolHits}</div><div class="muted">预生成命中</div></div>` +
+          `<div class="stat"><div class="num">${liveOk}</div><div class="muted">实时生成</div></div>` +
+          `<div class="stat"><div class="num">${hitRate}</div><div class="muted">命中率</div></div>`;
         meta.textContent = `合计 ${total} 次${since ? ' · ' + since : ''}`;
         if (!sizes.length) {
           list.innerHTML = '<p class="muted" style="margin:0">暂无出图请求记录（可刷新）</p>';

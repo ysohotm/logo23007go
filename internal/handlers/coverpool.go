@@ -45,6 +45,7 @@ func (h *Home) servePoolHit(w http.ResponseWriter, text string, width, height in
 	}
 	h.PoolScheduler.Ensure(spec, h.PoolConfig.Count())
 	writeCover(w, data, format.ContentType())
+	h.SizeStats.RecordPoolHit()
 	return data, true
 }
 

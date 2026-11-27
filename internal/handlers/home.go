@@ -237,6 +237,7 @@ func (h *Home) ImageKey(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(err.Error()))
 		return
 	}
+	h.SizeStats.RecordLive()
 	h.writePooledResult(w, text, width, height, file, format, result.Data)
 }
 
@@ -290,6 +291,7 @@ func (h *Home) Image(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(err.Error()))
 		return
 	}
+	h.SizeStats.RecordLive()
 	h.writePooledResult(w, text, width, height, file, format, result.Data)
 }
 

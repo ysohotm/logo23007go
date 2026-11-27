@@ -784,6 +784,9 @@ func TestCoverSizeStats(t *testing.T) {
 	if out["total"] != float64(0) {
 		t.Fatalf("total = %v, want 0", out["total"])
 	}
+	if out["pool_hits"] != float64(0) || out["live_ok"] != float64(0) {
+		t.Fatalf("pool_hits/live_ok = %v/%v, want 0/0", out["pool_hits"], out["live_ok"])
+	}
 	sizes, _ := out["sizes"].([]any)
 	if len(sizes) != 0 {
 		t.Fatalf("sizes = %v, want empty", sizes)
@@ -795,6 +798,9 @@ func TestCoverSizeStats(t *testing.T) {
 	a.SizeStats.Record(600, 800)
 	a.SizeStats.Record(600, 800)
 	a.SizeStats.Record(300, 400)
+	a.SizeStats.RecordPoolHit()
+	a.SizeStats.RecordPoolHit()
+	a.SizeStats.RecordLive()
 
 	code, out = do(t, mux, "GET", "/api/cover-pool/size-stats", tok, nil)
 	if code != http.StatusOK || out["ok"] != true {
@@ -802,6 +808,9 @@ func TestCoverSizeStats(t *testing.T) {
 	}
 	if out["total"] != float64(3) {
 		t.Fatalf("total = %v, want 3", out["total"])
+	}
+	if out["pool_hits"] != float64(2) || out["live_ok"] != float64(1) {
+		t.Fatalf("pool_hits/live_ok = %v/%v, want 2/1", out["pool_hits"], out["live_ok"])
 	}
 	sizes, _ = out["sizes"].([]any)
 	if len(sizes) != 2 {
@@ -828,6 +837,9 @@ func TestCoverSizeStats(t *testing.T) {
 	code, out = do(t, mux, "GET", "/api/cover-pool/size-stats", tok, nil)
 	if code != http.StatusOK || out["total"] != float64(0) {
 		t.Fatalf("after reset: %d %v", code, out)
+	}
+	if out["pool_hits"] != float64(0) || out["live_ok"] != float64(0) {
+		t.Fatalf("after reset pool_hits/live_ok = %v/%v, want 0/0", out["pool_hits"], out["live_ok"])
 	}
 	sizes, _ = out["sizes"].([]any)
 	if len(sizes) != 0 {

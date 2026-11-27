@@ -161,7 +161,8 @@ func TestCachedCoverBypassesImageSlotAndPreservesFormat(t *testing.T) {
 	if err := poolCfg.Set(context.Background(), coverpool.Settings{Count: 10, Sizes: [][2]int{{240, 300}}}); err != nil {
 		t.Fatal(err)
 	}
-	h := &Home{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Creater: &logo.Creater{}, Pool: pool, PoolConfig: poolCfg, ImageSem: sem, ImageWait: time.Millisecond}
+	stats := coverpool.NewSizeStats()
+	h := &Home{Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Creater: &logo.Creater{}, Pool: pool, PoolConfig: poolCfg, ImageSem: sem, ImageWait: time.Millisecond, SizeStats: stats}
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/home/image?text=%E7%BC%93%E5%AD%98%E5%85%B3%E9%94%AE%E8%AF%8D&width=240&height=300", nil)
 	h.Image(rec, req)
@@ -170,6 +171,9 @@ func TestCachedCoverBypassesImageSlotAndPreservesFormat(t *testing.T) {
 	}
 	if len(sem) != 1 {
 		t.Fatal("cache hit must not consume an image-generation slot")
+	}
+	if hits, live := stats.ServeCounts(); hits != 1 || live != 0 {
+		t.Fatalf("SizeStats after pool hit: hits=%d live=%d, want 1,0", hits, live)
 	}
 }
 
