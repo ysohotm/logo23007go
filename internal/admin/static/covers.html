@@ -8,20 +8,42 @@
   <link rel="stylesheet" href="common.css" />
   <style>
     input[type=number], input[type=search], select, textarea {
-      width: 100%; max-width: 420px; padding: 10px 14px; border-radius: 12px;
+      width: 100%; padding: 10px 14px; border-radius: 12px;
       border: 1px solid var(--border); background: var(--input); color: var(--text);
       font: inherit; transition: all .3s ease-in-out;
     }
     input[type=number]:hover, input[type=search]:hover, select:hover, textarea:hover { border-color: var(--accent); }
-    textarea { min-height: 88px; resize: vertical; }
+    input:focus, select:focus, textarea:focus {
+      outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+    textarea { min-height: 88px; resize: vertical; margin-bottom: 0; }
+    .form-grid {
+      display: grid; gap: 12px 16px; grid-template-columns: 1fr; margin: 4px 0 0;
+    }
+    @media (min-width: 640px) {
+      .form-grid { grid-template-columns: 1fr 1fr; }
+      .form-grid .span-2 { grid-column: 1 / -1; }
+    }
+    .form-grid label { margin-bottom: 6px; }
     .help { margin: 6px 0 0; font-size: .85rem; }
     .actions { margin-top: 20px; justify-content: flex-end; }
-    .notes { margin: 16px 0 0; padding-left: 20px; }
+    .notes {
+      margin: 0; padding-left: 18px;
+      columns: 1; column-gap: 28px;
+    }
+    @media (min-width: 768px) { .notes { columns: 2; } }
+    .notes li { break-inside: avoid; margin: 0 0 8px; font-size: .85rem; line-height: 1.5; }
+    .notes li:last-child { margin-bottom: 0; }
     .kw-toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin-bottom: 12px; }
     .kw-toolbar label { margin: 0; display: flex; flex-direction: column; gap: 6px; font-size: .85rem; }
     .kw-toolbar input, .kw-toolbar select { max-width: 180px; }
     .kw-pager { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 8px; }
-    .kw-list { display: flex; flex-direction: column; gap: 12px; margin-top: 4px; }
+    .kw-list { display: flex; flex-direction: column; gap: 0; margin-top: 4px; }
+    @media (min-width: 1100px) {
+      #keywordList.kw-list {
+        display: grid; grid-template-columns: 1fr 1fr; gap: 0 24px;
+      }
+    }
     .kw-row {
       display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
       padding: 10px 0; border-bottom: 1px solid var(--border);
@@ -36,6 +58,25 @@
     }
     .kw-chip.done { color: var(--muted); opacity: .85; }
     .kw-chip.todo { color: var(--text); font-weight: 600; border-color: var(--accent); }
+    .stats-inline {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+      gap: 12px;
+    }
+    .stats-inline .stat {
+      padding: 14px 16px; border-radius: 14px;
+      border: 1px solid var(--border); background: var(--input);
+      transition: all .3s ease-in-out;
+    }
+    .stats-inline .stat:hover { border-color: var(--accent); box-shadow: var(--shadow); }
+    .stats-inline .stat .num {
+      font-size: 1.5rem; font-weight: 600;
+      font-variant-numeric: tabular-nums; letter-spacing: -.02em; line-height: 1.2;
+    }
+    .stats-inline .stat .muted { margin-top: 6px; font-size: .8rem; }
+    .stats-inline .stat .pill { margin-top: 2px; }
+    .grid > .card, .grid > form.card { margin-bottom: 0; }
+    .grid { margin-bottom: 20px; }
     .gen-progress-bar {
       height: 8px; border-radius: 999px; background: var(--input);
       border: 1px solid var(--border); overflow: hidden; margin: 12px 0 0;
@@ -64,58 +105,80 @@
   <div class="wrap">
     <nav id="nav" class="nav"></nav>
 
-    <form id="form" class="card" style="max-width:640px" autocomplete="off">
-      <h2>关键词图片池</h2>
-      <p class="muted" style="margin:0 0 20px">仅对下方尺寸做预生成与随机返回；其它尺寸仍按请求实时生成。默认尺寸为 600×800。</p>
-      <label for="count">每个关键词的图片数量</label>
-      <input id="count" type="number" min="1" max="100" step="1" inputmode="numeric" required />
-      <label for="workers">后台生成并发（速度）</label>
-      <input id="workers" type="number" min="1" max="32" step="1" inputmode="numeric" required />
-      <p class="muted help">越大越快越吃 CPU</p>
-      <label for="sizes">启用预生成 / 随机的尺寸</label>
-      <textarea id="sizes" placeholder="每行一个，例如&#10;600x800&#10;300x400" required></textarea>
-      <div class="row actions">
-        <button id="btnSave" type="submit">保存并生效</button>
-      </div>
-    </form>
+    <div class="grid cols-2">
+      <form id="form" class="card" autocomplete="off">
+        <h2>关键词图片池</h2>
+        <p class="muted" style="margin:0 0 16px">仅对下方尺寸做预生成与随机返回；其它尺寸仍按请求实时生成。默认尺寸为 600×800。</p>
+        <div class="form-grid">
+          <div>
+            <label for="count">每个关键词的图片数量</label>
+            <input id="count" type="number" min="1" max="100" step="1" inputmode="numeric" required />
+          </div>
+          <div>
+            <label for="workers">后台生成并发（速度）</label>
+            <input id="workers" type="number" min="1" max="32" step="1" inputmode="numeric" required />
+            <p class="muted help">越大越快越吃 CPU</p>
+          </div>
+          <div class="span-2">
+            <label for="sizes">启用预生成 / 随机的尺寸</label>
+            <textarea id="sizes" placeholder="每行一个，例如&#10;600x800&#10;300x400" required></textarea>
+          </div>
+        </div>
+        <div class="row actions">
+          <button id="btnSave" type="submit">保存并生效</button>
+        </div>
+      </form>
 
-    <div class="card" style="max-width:640px">
-      <h2>后台生成进度</h2>
-      <p class="muted" style="margin:0 0 12px">本进程实时队列与出图进度，忙碌时自动刷新</p>
-      <div class="row actions" style="margin-top:0; margin-bottom:12px; justify-content:flex-end">
-        <button id="btnRefreshProgress" type="button">刷新进度</button>
-      </div>
-      <div id="genProgress" class="kw-list">
-        <p class="muted" style="margin:0">加载中…</p>
-      </div>
-      <div id="genProgressBar" class="gen-progress-bar" aria-hidden="true"><span></span></div>
-    </div>
-
-    <div class="card" style="max-width:640px">
-      <h2>请求尺寸排行</h2>
-      <p class="muted" style="margin:0 0 12px">来自本进程真实出图请求，可刷新/清零；pooled=已在白名单</p>
-      <div class="row actions" style="margin-top:0; margin-bottom:12px; justify-content:flex-end">
-        <button id="btnRefreshSizeStats" type="button">刷新排行</button>
-        <button id="btnResetSizeStats" type="button">清零统计</button>
-      </div>
-      <div id="sizeStatsMeta" class="muted" style="margin-bottom:8px"></div>
-      <div id="sizeStatsList" class="kw-list"></div>
-    </div>
-
-    <div class="card" style="max-width:640px">
-      <h2>手工添加关键词</h2>
-      <p class="muted" style="margin:0 0 20px">固定输出 WebP；按上方已保存的尺寸白名单，为每个关键词后台补齐到配置数量。可多种尺寸。</p>
-      <label for="keywords">关键词</label>
-      <textarea id="keywords" placeholder="每行一个关键词"></textarea>
-      <div class="row actions">
-        <button id="btnGenerate" type="button">生成备用图片</button>
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <h2>后台生成进度</h2>
+            <p class="muted" style="margin:0">本进程实时队列与出图进度，忙碌时自动刷新</p>
+          </div>
+          <button id="btnRefreshProgress" type="button" class="secondary">刷新进度</button>
+        </div>
+        <div id="genProgress" class="stats-inline">
+          <p class="muted" style="margin:0; grid-column:1/-1">加载中…</p>
+        </div>
+        <div id="genProgressBar" class="gen-progress-bar" aria-hidden="true"><span></span></div>
       </div>
     </div>
 
-    <div class="card" style="max-width:640px">
-      <h2>关键词进度</h2>
-      <p class="muted" style="margin:0 0 12px">含访问自动收集与手工添加</p>
-      <p class="muted" style="margin:0 0 12px">访问出图会自动登记新词到词库（不只手工添加）；进度按白名单尺寸统计磁盘池</p>
+    <div class="grid cols-2">
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <h2>请求尺寸排行</h2>
+            <p class="muted" style="margin:0">本进程真实出图请求；pooled=已在白名单</p>
+          </div>
+          <div class="row">
+            <button id="btnRefreshSizeStats" type="button" class="secondary">刷新排行</button>
+            <button id="btnResetSizeStats" type="button" class="secondary">清零统计</button>
+          </div>
+        </div>
+        <div id="sizeStatsMeta" class="muted" style="margin-bottom:8px"></div>
+        <div id="sizeStatsList" class="kw-list"></div>
+      </div>
+
+      <div class="card">
+        <h2>手工添加关键词</h2>
+        <p class="muted" style="margin:0 0 16px">固定输出 WebP；按已保存尺寸白名单，为每个关键词后台补齐到配置数量。</p>
+        <label for="keywords">关键词</label>
+        <textarea id="keywords" placeholder="每行一个关键词"></textarea>
+        <div class="row actions">
+          <button id="btnGenerate" type="button">生成备用图片</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h2>关键词进度</h2>
+          <p class="muted" style="margin:0">含访问自动收集与手工添加；进度按白名单尺寸统计磁盘池</p>
+        </div>
+        <button id="btnRefreshKeywords" type="button" class="secondary">刷新进度</button>
+      </div>
       <div class="kw-toolbar">
         <label for="kwSearch">搜索
           <input id="kwSearch" type="search" placeholder="关键词包含…" />
@@ -132,16 +195,15 @@
         <button id="btnKwPrev" type="button">上一页</button>
         <button id="btnKwNext" type="button">下一页</button>
         <span id="kwPageMeta" class="muted"></span>
-        <button id="btnRefreshKeywords" type="button" style="margin-left:auto">刷新进度</button>
       </div>
       <div id="keywordList" class="kw-list"></div>
     </div>
 
-    <div class="card" style="max-width:640px">
+    <div class="card">
       <h2>使用说明</h2>
       <ul class="notes muted">
-        <li>访问 <code>/home/image</code>、<code>/vod/...</code>、<code>/home/imagekey</code> 时会自动把关键词写入词库。</li>
-        <li>尺寸排行在后台本页可见（本进程真实出图请求，可刷新/清零）。</li>
+        <li>访问 <code>/home/image</code>、<code>/vod/...</code>、<code>/home/imagekey</code> 时自动把关键词写入词库。</li>
+        <li>尺寸排行可见本进程真实出图请求，可刷新/清零。</li>
         <li>只有白名单尺寸会建池：首图立即返回，其余后台补齐后随机。</li>
         <li>未在列表中的尺寸不预生成、不随机，每次实时出图。</li>
         <li>减小数量或删掉某个尺寸，不删除已生成的历史文件。</li>
@@ -217,16 +279,16 @@
         const workers = Number(p.workers) || 0;
         const completed = Number(p.completed) || 0;
         const failed = Number(p.failed) || 0;
-        const statusChip = busy
-          ? '<span class="kw-chip todo">忙碌中</span>'
-          : '<span class="kw-chip done">空闲</span>';
+        const statusPill = busy
+          ? '<span class="pill">忙碌中</span>'
+          : '<span class="pill ok">空闲</span>';
         $('genProgress').innerHTML =
-          `<div class="kw-row"><span class="kw-text">状态</span><span class="kw-chips">${statusChip}</span></div>` +
-          `<div class="kw-row"><span class="kw-text">队列</span><span class="kw-chips"><span class="kw-chip">${queueLen} / ${queueCap}</span></span></div>` +
-          `<div class="kw-row"><span class="kw-text">处理中</span><span class="kw-chips"><span class="kw-chip">${inflight}</span></span></div>` +
-          `<div class="kw-row"><span class="kw-text">正在出图</span><span class="kw-chips"><span class="kw-chip">${active} / ${workers}</span></span></div>` +
-          `<div class="kw-row"><span class="kw-text">本进程已完成</span><span class="kw-chips"><span class="kw-chip">${completed}</span></span></div>` +
-          `<div class="kw-row"><span class="kw-text">失败</span><span class="kw-chips"><span class="kw-chip">${failed}</span></span></div>`;
+          `<div class="stat"><div>${statusPill}</div><div class="muted">状态</div></div>` +
+          `<div class="stat"><div class="num">${queueLen}<span style="font-size:.85rem;font-weight:500;color:var(--muted)"> / ${queueCap}</span></div><div class="muted">队列</div></div>` +
+          `<div class="stat"><div class="num">${inflight}</div><div class="muted">处理中</div></div>` +
+          `<div class="stat"><div class="num">${active}<span style="font-size:.85rem;font-weight:500;color:var(--muted)"> / ${workers}</span></div><div class="muted">正在出图</div></div>` +
+          `<div class="stat"><div class="num">${completed}</div><div class="muted">已完成</div></div>` +
+          `<div class="stat"><div class="num">${failed}</div><div class="muted">失败</div></div>`;
         const bar = $('genProgressBar');
         const fill = bar.querySelector('span');
         if (busy) {
