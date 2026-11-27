@@ -8,6 +8,10 @@ import (
 	"time"
 )
 
+// schedulerProcs is the fixed size of the long-lived worker goroutine pool.
+// Throughput is controlled by maxConcurrent (Settings.Workers / SetMaxConcurrent).
+const schedulerProcs = 32
+
 // Generator produces one image in a pool slot.
 type Generator interface {
 	Generate(context.Context, Spec, int) error
@@ -18,17 +22,19 @@ type scheduleTask struct {
 	target int
 }
 
-// Scheduler fills pools with a bounded number of background workers.
+// Scheduler fills pools with a fixed goroutine pool; Generate concurrency is
+// bounded by maxConcurrent (adjustable via SetMaxConcurrent).
 type Scheduler struct {
 	ctx      context.Context
 	pool     *Pool
 	generate Generator
 	logger   *slog.Logger
-	workers  int
+	workers  int // fixed goroutine count (= schedulerProcs)
 	queue    chan scheduleTask
 
 	maxConcurrent atomic.Int64
-	inflightGen   atomic.Int64
+	admitted      atomic.Int64 // workers holding a concurrency slot (fill or waiting for work)
+	inflightGen   atomic.Int64 // concurrent Generate calls (Progress.Active)
 	completed     atomic.Int64
 	failed        atomic.Int64
 
@@ -43,21 +49,24 @@ type Progress struct {
 	QueueCap    int   `json:"queue_cap"`
 	Inflight    int   `json:"inflight"`     // specs claimed (queued or filling)
 	Active      int   `json:"active"`       // concurrent Generate calls
-	Workers     int   `json:"workers"`      // max concurrent Generate
-	WorkerProcs int   `json:"worker_procs"` // long-lived worker goroutines
+	Workers     int   `json:"workers"`      // max concurrent fills / Generate
+	WorkerProcs int   `json:"worker_procs"` // fixed long-lived worker goroutines
 	Completed   int64 `json:"completed"`    // images generated OK this process
 	Failed      int64 `json:"failed"`       // generate failures this process
 	Busy        bool  `json:"busy"`         // queue_len>0 || inflight>0 || active>0
 }
 
-// NewScheduler starts background workers that stop when ctx is canceled.
-// maxConcurrent is initialized from the workers parameter (Settings.Workers).
+// NewScheduler starts schedulerProcs worker goroutines that stop when ctx is canceled.
+// The workers parameter only sets the initial maxConcurrent (≤0 → 2, >32 → 32).
 func NewScheduler(ctx context.Context, pool *Pool, workers, queue int, generate Generator, logger *slog.Logger) *Scheduler {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if workers <= 0 {
 		workers = 2
+	}
+	if workers > schedulerProcs {
+		workers = schedulerProcs
 	}
 	if queue <= 0 {
 		queue = 256
@@ -67,19 +76,19 @@ func NewScheduler(ctx context.Context, pool *Pool, workers, queue int, generate 
 		pool:     pool,
 		generate: generate,
 		logger:   logger,
-		workers:  workers,
+		workers:  schedulerProcs,
 		queue:    make(chan scheduleTask, queue),
 		inflight: make(map[Spec]struct{}),
 	}
 	s.maxConcurrent.Store(int64(workers))
-	s.wg.Add(workers)
-	for range workers {
+	s.wg.Add(schedulerProcs)
+	for range schedulerProcs {
 		go s.work()
 	}
 	return s
 }
 
-// SetMaxConcurrent updates the Generate concurrency limit (1..32).
+// SetMaxConcurrent updates the fill/Generate concurrency limit (1..32).
 func (s *Scheduler) SetMaxConcurrent(n int) {
 	if s == nil {
 		return
@@ -93,7 +102,7 @@ func (s *Scheduler) SetMaxConcurrent(n int) {
 	s.maxConcurrent.Store(int64(n))
 }
 
-// MaxConcurrent returns the current Generate concurrency limit.
+// MaxConcurrent returns the current concurrency limit.
 func (s *Scheduler) MaxConcurrent() int {
 	if s == nil {
 		return 2
@@ -115,7 +124,7 @@ func (s *Scheduler) Progress() Progress {
 	s.mu.Unlock()
 	queueLen := len(s.queue)
 	active := int(s.inflightGen.Load())
-	p := Progress{
+	return Progress{
 		QueueLen:    queueLen,
 		QueueCap:    cap(s.queue),
 		Inflight:    inflight,
@@ -126,7 +135,6 @@ func (s *Scheduler) Progress() Progress {
 		Failed:      s.failed.Load(),
 		Busy:        queueLen > 0 || inflight > 0 || active > 0,
 	}
-	return p
 }
 
 // Ensure schedules one fill round per spec. A full queue rejects the task and
@@ -163,11 +171,23 @@ func (s *Scheduler) Wait() {
 func (s *Scheduler) work() {
 	defer s.wg.Done()
 	for {
+		if !s.acquireAdmission() {
+			return
+		}
+		timer := time.NewTimer(25 * time.Millisecond)
 		select {
 		case <-s.ctx.Done():
+			timer.Stop()
+			s.releaseAdmission()
 			return
 		case task := <-s.queue:
+			timer.Stop()
 			s.fill(task)
+			s.releaseAdmission()
+		case <-timer.C:
+			// Idle: drop admission so maxConcurrent slots stay available for
+			// real work and so Progress.Active can settle to 0.
+			s.releaseAdmission()
 		}
 	}
 }
@@ -187,12 +207,14 @@ func (s *Scheduler) fill(task scheduleTask) {
 		s.logFailure(task.spec, 0, "inspect missing slots", err)
 		return
 	}
+	// Admission already caps parallel fills; generate slots sequentially.
 	for _, slot := range missing {
-		if !s.acquireGenSlot() {
+		if s.ctx.Err() != nil {
 			return
 		}
+		s.inflightGen.Add(1)
 		err := s.generate.Generate(s.ctx, task.spec, slot)
-		s.releaseGenSlot()
+		s.inflightGen.Add(-1)
 		if err != nil {
 			s.failed.Add(1)
 			s.logFailure(task.spec, slot, "generate cover", err)
@@ -202,22 +224,22 @@ func (s *Scheduler) fill(task scheduleTask) {
 	}
 }
 
-func (s *Scheduler) acquireGenSlot() bool {
+func (s *Scheduler) acquireAdmission() bool {
 	for {
 		if s.ctx.Err() != nil {
 			return false
 		}
 		max := int64(s.MaxConcurrent())
-		cur := s.inflightGen.Load()
-		if cur < max && s.inflightGen.CompareAndSwap(cur, cur+1) {
+		cur := s.admitted.Load()
+		if cur < max && s.admitted.CompareAndSwap(cur, cur+1) {
 			return true
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
-func (s *Scheduler) releaseGenSlot() {
-	s.inflightGen.Add(-1)
+func (s *Scheduler) releaseAdmission() {
+	s.admitted.Add(-1)
 }
 
 func (s *Scheduler) logFailure(spec Spec, slot int, operation string, err error) {

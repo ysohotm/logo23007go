@@ -38,9 +38,9 @@ go run .
 
 ## 关键词封面池与 Cloudflare 缓存
 
-`/home/image`、`/vod/{text}` 与 `/home/imagekey` 仅对后台白名单尺寸做成品池：首次同步生成一张并返回，后台补齐到配置数量（默认 10，可设 1–100），之后随机读取。默认白名单为 `600x800`（未带尺寸后缀时的默认封面）；其它尺寸仍实时生成、不预生成。增大数量或新增尺寸后由后续访问补齐；减小数量或删尺寸不删除历史文件。补图共享正常生图并发限制，worker 默认 2，队列默认 256。
+`/home/image`、`/vod/{text}` 与 `/home/imagekey` 仅对后台白名单尺寸做成品池：首次同步生成一张并返回，后台补齐到配置数量（默认 10，可设 1–100），之后随机读取。默认白名单为 `600x800`（未带尺寸后缀时的默认封面）；其它尺寸仍实时生成、不预生成。增大数量或新增尺寸后由后续访问补齐；减小数量或删尺寸不删除历史文件。补图共享正常生图并发限制；并发在后台「封面图片池」页设 1–32，队列默认 256。
 
-成品保存在 `app_data/cache/covers/<哈希>/`。`COVER_POOL_DIR=off` 可关闭成品池；`COVER_POOL_WORKERS`、`COVER_POOL_QUEUE` 可调。
+成品保存在 `app_data/cache/covers/<哈希>/`。`COVER_POOL_DIR=off` 可关闭成品池；`COVER_POOL_QUEUE` 可调队列。`COVER_POOL_WORKERS` 已废弃（忽略），并发以后台配置为准。
 
 成功封面响应带：
 
@@ -106,7 +106,7 @@ docker run -d --name logo23107 --network host --restart always \
 ./pubdocker.sh ghcr
 ```
 
-可选环境变量：`COVER_POOL_DIR`（默认 `app_data/cache/covers`，`off` 关闭）、`COVER_POOL_WORKERS`、`BG_CACHE_DIR`。
+可选环境变量：`COVER_POOL_DIR`（默认 `app_data/cache/covers`，`off` 关闭）、`COVER_POOL_QUEUE`、`BG_CACHE_DIR`。
 
 包地址：https://github.com/users/ysohotm/packages/container/package/logo23007%2Flogo23007go  
 （当前为 private，需登录 ghcr 后拉取）

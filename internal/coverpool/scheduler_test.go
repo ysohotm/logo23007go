@@ -160,9 +160,10 @@ func TestSchedulerQueueIsBoundedAndRetryable(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	firstGenerator := &blockingGenerator{
-		started: make(chan generateCall, 1),
-		release: make(chan error, 1),
+		started: make(chan generateCall, 4),
+		release: make(chan error, 4),
 	}
+	// maxConcurrent=1 → only one fill runs; extra tasks stay in the queue.
 	scheduler := NewScheduler(ctx, NewPool(t.TempDir()), 1, 1, firstGenerator, nil)
 	first := testSpec("first")
 	second := testSpec("second")
@@ -182,7 +183,7 @@ func TestSchedulerQueueIsBoundedAndRetryable(t *testing.T) {
 		t.Fatal("rejected Ensure left the spec marked inflight")
 	}
 
-	// Once the active task completes, its queue slot can accept the retry.
+	// Finish first fill (2 slots) so the queued second starts and frees a queue slot.
 	firstGenerator.release <- nil
 	receiveGenerateCall(t, firstGenerator.started)
 	firstGenerator.release <- nil
@@ -261,8 +262,8 @@ func TestSchedulerProgressCounts(t *testing.T) {
 	if p.Workers != scheduler.MaxConcurrent() {
 		t.Fatalf("Workers = %d, want %d", p.Workers, scheduler.MaxConcurrent())
 	}
-	if p.WorkerProcs != 2 {
-		t.Fatalf("WorkerProcs = %d, want 2", p.WorkerProcs)
+	if p.WorkerProcs != schedulerProcs {
+		t.Fatalf("WorkerProcs = %d, want %d", p.WorkerProcs, schedulerProcs)
 	}
 	if p.QueueCap != 8 {
 		t.Fatalf("QueueCap = %d, want 8", p.QueueCap)
@@ -327,6 +328,89 @@ func TestSchedulerSetMaxConcurrent(t *testing.T) {
 	}
 }
 
+func TestSchedulerSetMaxConcurrentRaisesParallelism(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pool := NewPool(t.TempDir())
+	generator := &blockingGenerator{
+		started: make(chan generateCall, 16),
+		release: make(chan error, 16),
+		pool:    pool,
+	}
+	scheduler := NewScheduler(ctx, pool, 2, 16, generator, nil)
+	if got := scheduler.Progress().WorkerProcs; got != schedulerProcs {
+		t.Fatalf("WorkerProcs = %d, want %d", got, schedulerProcs)
+	}
+	if got := scheduler.MaxConcurrent(); got != 2 {
+		t.Fatalf("MaxConcurrent = %d, want 2", got)
+	}
+
+	// Multiple specs so distinct worker goroutines can Generate in parallel
+	// (fill is serial within one task).
+	for i := 0; i < 4; i++ {
+		spec := testSpec(fmt.Sprintf("par-%d", i))
+		if !scheduler.Ensure(spec, 2) {
+			t.Fatalf("Ensure(%s) returned false", spec.Text)
+		}
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for scheduler.Progress().Active < 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for Active=2, got %+v", scheduler.Progress())
+		}
+		time.Sleep(time.Millisecond)
+	}
+	receiveGenerateCall(t, generator.started)
+	receiveGenerateCall(t, generator.started)
+
+	if p := scheduler.Progress(); p.Active != 2 || p.Workers != 2 {
+		t.Fatalf("before raise: Active=%d Workers=%d, want 2/2 (got %+v)", p.Active, p.Workers, p)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if p := scheduler.Progress(); p.Active > 2 {
+		t.Fatalf("Active rose above maxConcurrent=2: %d", p.Active)
+	}
+
+	scheduler.SetMaxConcurrent(4)
+	if got := scheduler.Progress().Workers; got != 4 {
+		t.Fatalf("Workers after SetMaxConcurrent(4) = %d, want 4", got)
+	}
+
+	deadline = time.Now().Add(2 * time.Second)
+	for scheduler.Progress().Active <= 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("Active did not exceed 2 after SetMaxConcurrent(4): %+v", scheduler.Progress())
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	const totalImages = 8
+	// Unblock the two Generates still waiting from the maxConcurrent=2 phase.
+	generator.release <- nil
+	generator.release <- nil
+	// Consume+release the rest (including any that started after the raise).
+	deadline = time.Now().Add(3 * time.Second)
+	for {
+		p := scheduler.Progress()
+		if !p.Busy && p.Completed == int64(totalImages) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out draining: %+v", p)
+		}
+		select {
+		case <-generator.started:
+			generator.release <- nil
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	waitSchedulerIdle(t, scheduler)
+	if got := scheduler.MaxConcurrent(); got != 4 {
+		t.Fatalf("final MaxConcurrent = %d, want 4", got)
+	}
+}
+
 func TestSchedulerNilSafetyAndDefaults(t *testing.T) {
 	var scheduler *Scheduler
 	if scheduler.Ensure(testSpec("nil"), 10) {
@@ -336,8 +420,8 @@ func TestSchedulerNilSafetyAndDefaults(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	nilPool := NewScheduler(ctx, nil, 0, 0, &recordingGenerator{}, nil)
-	if got := nilPool.workers; got != 2 {
-		t.Fatalf("default workers = %d, want 2", got)
+	if got := nilPool.workers; got != schedulerProcs {
+		t.Fatalf("worker procs = %d, want %d", got, schedulerProcs)
 	}
 	if got := nilPool.MaxConcurrent(); got != 2 {
 		t.Fatalf("default MaxConcurrent = %d, want 2", got)
@@ -398,14 +482,12 @@ func waitSchedulerIdle(t *testing.T, scheduler *Scheduler) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
 	for {
-		scheduler.mu.Lock()
-		idle := len(scheduler.inflight) == 0
-		scheduler.mu.Unlock()
-		if idle {
+		p := scheduler.Progress()
+		if p.Inflight == 0 && p.Active == 0 && p.QueueLen == 0 {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("timed out waiting for scheduler to become idle")
+			t.Fatalf("timed out waiting for scheduler to become idle: %+v", p)
 		}
 		time.Sleep(time.Millisecond)
 	}

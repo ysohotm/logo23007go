@@ -143,9 +143,6 @@ func main() {
 		var poolCtx context.Context
 		poolCtx, poolCancel = context.WithCancel(context.Background())
 		w := poolConfig.Workers()
-		if env := envInt("COVER_POOL_WORKERS", 0); env > 0 {
-			w = env
-		}
 		h.PoolScheduler = coverpool.NewScheduler(poolCtx, pool, w, envInt("COVER_POOL_QUEUE", 256), h, logger)
 		h.PoolScheduler.SetMaxConcurrent(w)
 		logger.Info("cover pool", "dir", poolDir, "count", poolConfig.Count(), "sizes", coverpool.FormatSizes(poolConfig.Sizes()), "workers", w)

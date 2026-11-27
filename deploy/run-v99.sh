@@ -54,7 +54,6 @@ docker run -d --name "$NAME" --network host --restart always \
   -e GOMEMLIMIT="${GOMEMLIMIT:-3GiB}" \
   -e IMAGE_CONCURRENCY="${IMAGE_CONCURRENCY:-192}" \
   -e IMAGE_WAIT="${IMAGE_WAIT:-5s}" \
-  -e COVER_POOL_WORKERS="${COVER_POOL_WORKERS:-2}" \
   -e PORT="$PORT" \
   -v /usr/share/zoneinfo/Asia/Shanghai:/etc/localtime:ro \
   -v "$HOST_DATA:/app/app_data" \
