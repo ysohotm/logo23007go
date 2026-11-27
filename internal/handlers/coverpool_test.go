@@ -65,6 +65,46 @@ func TestResolveImageMatchesPooledSpec(t *testing.T) {
 	}
 }
 
+func TestPoolSpecIgnoresRequestBackground(t *testing.T) {
+	h := &Home{}
+	a := h.poolSpec("同一词", 300, 400, "bg-a.jpg", logo.FormatWebP)
+	b := h.poolSpec("同一词", 300, 400, "bg-b.jpg", logo.FormatWebP)
+	if a != b {
+		t.Fatalf("poolSpec must share one pool: %+v vs %+v", a, b)
+	}
+	if a.Background != "" {
+		t.Fatalf("Background = %q, want empty", a.Background)
+	}
+}
+
+func TestPoolHitSharedAcrossRequestBackgrounds(t *testing.T) {
+	pool := coverpool.NewPool(t.TempDir())
+	spec := coverpool.Spec{Text: "共用背景池", Width: 300, Height: 400, Background: "", Format: coverpool.FormatWebP}
+	webp := []byte{'R', 'I', 'F', 'F', 4, 0, 0, 0, 'W', 'E', 'B', 'P'}
+	if err := pool.Put(spec, 0, webp); err != nil {
+		t.Fatal(err)
+	}
+	poolCfg := coverpool.NewConfig(nil, nil)
+	if err := poolCfg.Set(context.Background(), coverpool.Settings{Count: 10, Sizes: [][2]int{{300, 400}}}); err != nil {
+		t.Fatal(err)
+	}
+	stats := coverpool.NewSizeStats()
+	h := &Home{
+		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Creater:    &logo.Creater{},
+		Pool:       pool,
+		PoolConfig: poolCfg,
+		SizeStats:  stats,
+	}
+	rec := httptest.NewRecorder()
+	if _, ok := h.servePoolHit(rec, "共用背景池", 300, 400, "any-other-bg.jpg", logo.FormatWebP); !ok {
+		t.Fatal("expected pool hit with different request background")
+	}
+	if hits, _ := stats.ServeCounts(); hits != 1 {
+		t.Fatalf("pool hits = %d, want 1", hits)
+	}
+}
+
 func TestCoverPoolFirstImageAndBackgroundFill(t *testing.T) {
 	root := t.TempDir()
 	fontsDir := filepath.Join(root, "app_data", "fonts")

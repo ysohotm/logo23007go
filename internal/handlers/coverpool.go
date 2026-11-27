@@ -25,8 +25,11 @@ func (h *Home) poolForSize(width, height int) bool {
 	return h.poolEnabled() && h.PoolConfig != nil && h.PoolConfig.Allows(width, height)
 }
 
-func (h *Home) poolSpec(text string, width, height int, file string, format logo.OutputFormat) coverpool.Spec {
-	return coverpool.Spec{Text: text, Width: width, Height: height, Background: file, Format: coverpool.ImageFormat(format)}
+// poolSpec keys the disk pool by text×size×format only. Request background is
+// ignored so one keyword shares a single prewarm pool (CreateBytesImage picks a
+// random background when Background is empty). Matches manual prewarm.
+func (h *Home) poolSpec(text string, width, height int, _ string, format logo.OutputFormat) coverpool.Spec {
+	return coverpool.Spec{Text: text, Width: width, Height: height, Background: "", Format: coverpool.ImageFormat(format)}
 }
 
 // servePoolHit runs before the image semaphore in Image and ImageKey. Reading
