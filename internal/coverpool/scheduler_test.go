@@ -228,6 +228,32 @@ func TestSchedulerCancelReleasesGenerationAndWait(t *testing.T) {
 	}
 }
 
+func TestSchedulerSetMaxConcurrent(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	scheduler := NewScheduler(ctx, NewPool(t.TempDir()), 4, 8, &recordingGenerator{}, nil)
+	if got := scheduler.MaxConcurrent(); got != 4 {
+		t.Fatalf("MaxConcurrent() = %d, want 4", got)
+	}
+	scheduler.SetMaxConcurrent(1)
+	if got := scheduler.MaxConcurrent(); got != 1 {
+		t.Fatalf("after SetMaxConcurrent(1) = %d", got)
+	}
+	scheduler.SetMaxConcurrent(100)
+	if got := scheduler.MaxConcurrent(); got != 32 {
+		t.Fatalf("SetMaxConcurrent clamps to 32, got %d", got)
+	}
+	scheduler.SetMaxConcurrent(0)
+	if got := scheduler.MaxConcurrent(); got != 1 {
+		t.Fatalf("SetMaxConcurrent clamps low to 1, got %d", got)
+	}
+	var nilSched *Scheduler
+	nilSched.SetMaxConcurrent(8)
+	if got := nilSched.MaxConcurrent(); got != 2 {
+		t.Fatalf("nil MaxConcurrent = %d", got)
+	}
+}
+
 func TestSchedulerNilSafetyAndDefaults(t *testing.T) {
 	var scheduler *Scheduler
 	if scheduler.Ensure(testSpec("nil"), 10) {
@@ -239,6 +265,9 @@ func TestSchedulerNilSafetyAndDefaults(t *testing.T) {
 	nilPool := NewScheduler(ctx, nil, 0, 0, &recordingGenerator{}, nil)
 	if got := nilPool.workers; got != 2 {
 		t.Fatalf("default workers = %d, want 2", got)
+	}
+	if got := nilPool.MaxConcurrent(); got != 2 {
+		t.Fatalf("default MaxConcurrent = %d, want 2", got)
 	}
 	if got := cap(nilPool.queue); got != 256 {
 		t.Fatalf("default queue capacity = %d, want 256", got)

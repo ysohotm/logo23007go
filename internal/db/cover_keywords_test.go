@@ -15,6 +15,16 @@ func TestCoverKeywordStoreNilSafe(t *testing.T) {
 	if got, err := nilStore.List(ctx); err != nil || got != nil {
 		t.Fatalf("nil store List = %v, %v", got, err)
 	}
+	page, err := nilStore.ListPage(ctx, 0, 0, "q")
+	if err != nil {
+		t.Fatalf("nil store ListPage: %v", err)
+	}
+	if page.Texts == nil || len(page.Texts) != 0 || page.Page != 1 || page.PageSize != 50 || page.Total != 0 {
+		t.Fatalf("nil store ListPage = %+v", page)
+	}
+	if err := nilStore.EnsureIndexes(ctx); err != nil {
+		t.Fatalf("nil store EnsureIndexes: %v", err)
+	}
 
 	empty := &CoverKeywordStore{}
 	if err := empty.UpsertMany(ctx, []string{"a"}); err != nil {
@@ -22,6 +32,35 @@ func TestCoverKeywordStoreNilSafe(t *testing.T) {
 	}
 	if got, err := empty.List(ctx); err != nil || got != nil {
 		t.Fatalf("nil Coll List = %v, %v", got, err)
+	}
+	page, err = empty.ListPage(ctx, 2, 100, "")
+	if err != nil {
+		t.Fatalf("nil Coll ListPage: %v", err)
+	}
+	if page.Texts == nil || len(page.Texts) != 0 || page.Page != 2 || page.PageSize != 100 {
+		t.Fatalf("nil Coll ListPage = %+v", page)
+	}
+}
+
+func TestClampKeywordListPage(t *testing.T) {
+	tests := []struct {
+		page, size     int
+		wantPage, want int
+	}{
+		{0, 0, 1, 50},
+		{-1, -5, 1, 50},
+		{1, 50, 1, 50},
+		{3, 100, 3, 100},
+		{2, 200, 2, 200},
+		{1, 201, 1, 200},
+		{1, 999, 1, 200},
+	}
+	for _, tt := range tests {
+		gotPage, gotSize := clampKeywordListPage(tt.page, tt.size)
+		if gotPage != tt.wantPage || gotSize != tt.want {
+			t.Fatalf("clampKeywordListPage(%d,%d)=(%d,%d), want (%d,%d)",
+				tt.page, tt.size, gotPage, gotSize, tt.wantPage, tt.want)
+		}
 	}
 }
 

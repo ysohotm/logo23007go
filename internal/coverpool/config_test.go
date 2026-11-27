@@ -30,7 +30,11 @@ func (s *fakeConfigStore) Get(context.Context) (Settings, error) {
 		default:
 		}
 	}
-	out := Settings{Count: s.settings.Count, Sizes: append([][2]int(nil), s.settings.Sizes...)}
+	out := Settings{
+		Count:   s.settings.Count,
+		Workers: s.settings.Workers,
+		Sizes:   append([][2]int(nil), s.settings.Sizes...),
+	}
 	return out, s.getErr
 }
 
@@ -41,7 +45,11 @@ func (s *fakeConfigStore) Set(_ context.Context, settings Settings) error {
 	if s.setErr != nil {
 		return s.setErr
 	}
-	s.settings = Settings{Count: settings.Count, Sizes: append([][2]int(nil), settings.Sizes...)}
+	s.settings = Settings{
+		Count:   settings.Count,
+		Workers: settings.Workers,
+		Sizes:   append([][2]int(nil), settings.Sizes...),
+	}
 	return nil
 }
 
@@ -62,6 +70,9 @@ func TestConfigDefaults(t *testing.T) {
 	if got := nilConfig.Count(); got != 10 {
 		t.Fatalf("nil Config.Count() = %d, want 10", got)
 	}
+	if got := nilConfig.Workers(); got != 2 {
+		t.Fatalf("nil Config.Workers() = %d, want 2", got)
+	}
 	if !reflect.DeepEqual(nilConfig.Sizes(), DefaultSizes()) {
 		t.Fatalf("nil Config.Sizes() = %v", nilConfig.Sizes())
 	}
@@ -73,8 +84,32 @@ func TestConfigDefaults(t *testing.T) {
 	if got := cfg.Count(); got != 10 {
 		t.Fatalf("Count() = %d before refresh, want default 10", got)
 	}
+	if got := cfg.Workers(); got != 2 {
+		t.Fatalf("Workers() = %d before refresh, want default 2", got)
+	}
 	if !reflect.DeepEqual(cfg.Sizes(), DefaultSizes()) {
 		t.Fatalf("Sizes() = %v, want default", cfg.Sizes())
+	}
+	snap := DefaultSettings()
+	if snap.Workers != 2 || snap.Count != 10 {
+		t.Fatalf("DefaultSettings() = %+v", snap)
+	}
+}
+
+func TestNormalizeSettingsWorkers(t *testing.T) {
+	got, err := NormalizeSettings(Settings{Count: 10, Sizes: DefaultSizes(), Workers: 0})
+	if err != nil || got.Workers != 2 {
+		t.Fatalf("workers 0 → default: %+v, %v", got, err)
+	}
+	got, err = NormalizeSettings(Settings{Count: 10, Sizes: DefaultSizes(), Workers: 8})
+	if err != nil || got.Workers != 8 {
+		t.Fatalf("workers 8: %+v, %v", got, err)
+	}
+	if _, err := NormalizeSettings(Settings{Count: 10, Sizes: DefaultSizes(), Workers: -1}); err == nil {
+		t.Fatal("negative workers accepted")
+	}
+	if _, err := NormalizeSettings(Settings{Count: 10, Sizes: DefaultSizes(), Workers: 33}); err == nil {
+		t.Fatal("workers 33 accepted")
 	}
 }
 
@@ -97,15 +132,18 @@ func TestConfigSet(t *testing.T) {
 	store := &fakeConfigStore{settings: DefaultSettings()}
 	cfg := NewConfig(store, nil)
 
-	want := Settings{Count: 42, Sizes: [][2]int{{600, 800}, {300, 400}}}
+	want := Settings{Count: 42, Sizes: [][2]int{{600, 800}, {300, 400}}, Workers: 4}
 	if err := cfg.Set(ctx, want); err != nil {
 		t.Fatal(err)
 	}
-	if got := cfg.Snapshot(); !reflect.DeepEqual(got.Sizes, want.Sizes) || got.Count != 42 {
+	if got := cfg.Snapshot(); !reflect.DeepEqual(got.Sizes, want.Sizes) || got.Count != 42 || got.Workers != 4 {
 		t.Fatalf("Snapshot() = %+v", got)
 	}
-	if !reflect.DeepEqual(store.settings.Sizes, want.Sizes) || store.settings.Count != 42 {
+	if !reflect.DeepEqual(store.settings.Sizes, want.Sizes) || store.settings.Count != 42 || store.settings.Workers != 4 {
 		t.Fatalf("stored = %+v", store.settings)
+	}
+	if cfg.Workers() != 4 {
+		t.Fatalf("Workers() = %d, want 4", cfg.Workers())
 	}
 
 	if err := cfg.Set(ctx, Settings{Count: 0, Sizes: DefaultSizes()}); err == nil {

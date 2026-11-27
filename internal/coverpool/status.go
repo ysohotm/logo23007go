@@ -14,8 +14,9 @@ type KeywordStatus struct {
 	Sizes []SizeProgress `json:"sizes"`
 }
 
-// StatusFor builds per-size WebP progress for each text using Pool.Count and Config sizes/count.
-// Background always "". Format FormatWebP. Missing pool/config → empty sizes or zero counts without panic.
+// StatusFor builds per-size progress for each text using Pool.CountByTextSize
+// (aggregates all backgrounds/formats) and Config sizes/count.
+// Missing pool/config → empty sizes or zero counts without panic.
 func StatusFor(pool *Pool, cfg *Config, texts []string) []KeywordStatus {
 	out := make([]KeywordStatus, 0, len(texts))
 	if len(texts) == 0 {
@@ -35,16 +36,7 @@ func StatusFor(pool *Pool, cfg *Config, texts []string) []KeywordStatus {
 		for _, size := range sizes {
 			count := 0
 			if pool != nil {
-				n, err := pool.Count(Spec{
-					Text:       text,
-					Width:      size[0],
-					Height:     size[1],
-					Background: "",
-					Format:     FormatWebP,
-				})
-				if err == nil {
-					count = n
-				}
+				count = pool.CountByTextSize(text, size[0], size[1])
 			}
 			progress = append(progress, SizeProgress{
 				Width:  size[0],

@@ -4,6 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // Generator produces one image in a pool slot.
@@ -25,12 +27,16 @@ type Scheduler struct {
 	workers  int
 	queue    chan scheduleTask
 
+	maxConcurrent atomic.Int64
+	inflightGen   atomic.Int64
+
 	mu       sync.Mutex
 	inflight map[Spec]struct{}
 	wg       sync.WaitGroup
 }
 
 // NewScheduler starts background workers that stop when ctx is canceled.
+// maxConcurrent is initialized from the workers parameter (Settings.Workers).
 func NewScheduler(ctx context.Context, pool *Pool, workers, queue int, generate Generator, logger *slog.Logger) *Scheduler {
 	if ctx == nil {
 		ctx = context.Background()
@@ -50,11 +56,38 @@ func NewScheduler(ctx context.Context, pool *Pool, workers, queue int, generate 
 		queue:    make(chan scheduleTask, queue),
 		inflight: make(map[Spec]struct{}),
 	}
+	s.maxConcurrent.Store(int64(workers))
 	s.wg.Add(workers)
 	for range workers {
 		go s.work()
 	}
 	return s
+}
+
+// SetMaxConcurrent updates the Generate concurrency limit (1..32).
+func (s *Scheduler) SetMaxConcurrent(n int) {
+	if s == nil {
+		return
+	}
+	if n < 1 {
+		n = 1
+	}
+	if n > 32 {
+		n = 32
+	}
+	s.maxConcurrent.Store(int64(n))
+}
+
+// MaxConcurrent returns the current Generate concurrency limit.
+func (s *Scheduler) MaxConcurrent() int {
+	if s == nil {
+		return 2
+	}
+	n := int(s.maxConcurrent.Load())
+	if n < 1 {
+		return 2
+	}
+	return n
 }
 
 // Ensure schedules one fill round per spec. A full queue rejects the task and
@@ -116,11 +149,34 @@ func (s *Scheduler) fill(task scheduleTask) {
 		return
 	}
 	for _, slot := range missing {
-		if err := s.generate.Generate(s.ctx, task.spec, slot); err != nil {
+		if !s.acquireGenSlot() {
+			return
+		}
+		err := s.generate.Generate(s.ctx, task.spec, slot)
+		s.releaseGenSlot()
+		if err != nil {
 			s.logFailure(task.spec, slot, "generate cover", err)
 			return
 		}
 	}
+}
+
+func (s *Scheduler) acquireGenSlot() bool {
+	for {
+		if s.ctx.Err() != nil {
+			return false
+		}
+		max := int64(s.MaxConcurrent())
+		cur := s.inflightGen.Load()
+		if cur < max && s.inflightGen.CompareAndSwap(cur, cur+1) {
+			return true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func (s *Scheduler) releaseGenSlot() {
+	s.inflightGen.Add(-1)
 }
 
 func (s *Scheduler) logFailure(spec Spec, slot int, operation string, err error) {

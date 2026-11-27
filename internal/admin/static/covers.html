@@ -7,15 +7,20 @@
   <title>关键词图片池 · logo23007 后台</title>
   <link rel="stylesheet" href="common.css" />
   <style>
-    input[type=number], textarea {
+    input[type=number], input[type=search], select, textarea {
       width: 100%; max-width: 420px; padding: 10px 14px; border-radius: 12px;
       border: 1px solid var(--border); background: var(--input); color: var(--text);
       font: inherit; transition: all .3s ease-in-out;
     }
-    input[type=number]:hover, textarea:hover { border-color: var(--accent); }
+    input[type=number]:hover, input[type=search]:hover, select:hover, textarea:hover { border-color: var(--accent); }
     textarea { min-height: 88px; resize: vertical; }
+    .help { margin: 6px 0 0; font-size: .85rem; }
     .actions { margin-top: 20px; justify-content: flex-end; }
     .notes { margin: 16px 0 0; padding-left: 20px; }
+    .kw-toolbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin-bottom: 12px; }
+    .kw-toolbar label { margin: 0; display: flex; flex-direction: column; gap: 6px; font-size: .85rem; }
+    .kw-toolbar input, .kw-toolbar select { max-width: 180px; }
+    .kw-pager { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 8px; }
     .kw-list { display: flex; flex-direction: column; gap: 12px; margin-top: 4px; }
     .kw-row {
       display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
@@ -42,6 +47,9 @@
       <p class="muted" style="margin:0 0 20px">仅对下方尺寸做预生成与随机返回；其它尺寸仍按请求实时生成。默认尺寸为 600×800。</p>
       <label for="count">每个关键词的图片数量</label>
       <input id="count" type="number" min="1" max="100" step="1" inputmode="numeric" required />
+      <label for="workers">后台生成并发（速度）</label>
+      <input id="workers" type="number" min="1" max="32" step="1" inputmode="numeric" required />
+      <p class="muted help">越大越快越吃 CPU</p>
       <label for="sizes">启用预生成 / 随机的尺寸</label>
       <textarea id="sizes" placeholder="每行一个，例如&#10;600x800&#10;300x400" required></textarea>
       <div class="row actions">
@@ -74,8 +82,23 @@
       <h2>关键词进度</h2>
       <p class="muted" style="margin:0 0 12px">含访问自动收集与手工添加</p>
       <p class="muted" style="margin:0 0 12px">访问出图会自动登记新词到词库（不只手工添加）；进度按白名单尺寸统计磁盘池</p>
-      <div class="row actions" style="margin-top:0; margin-bottom:12px; justify-content:flex-end">
-        <button id="btnRefreshKeywords" type="button">刷新进度</button>
+      <div class="kw-toolbar">
+        <label for="kwSearch">搜索
+          <input id="kwSearch" type="search" placeholder="关键词包含…" />
+        </label>
+        <label for="kwPageSize">每页
+          <select id="kwPageSize">
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+            <option value="200">200</option>
+          </select>
+        </label>
+      </div>
+      <div class="kw-pager">
+        <button id="btnKwPrev" type="button">上一页</button>
+        <button id="btnKwNext" type="button">下一页</button>
+        <span id="kwPageMeta" class="muted"></span>
+        <button id="btnRefreshKeywords" type="button" style="margin-left:auto">刷新进度</button>
       </div>
       <div id="keywordList" class="kw-list"></div>
     </div>
@@ -96,8 +119,12 @@
 
   <script src="common.js"></script>
   <script>
+    let kwPage = 1;
+    let kwTotal = 0;
+
     function fill(config) {
       $('count').value = config.count;
+      $('workers').value = config.workers || 2;
       $('sizes').value = (config.sizes || []).join('\n');
     }
 
@@ -128,11 +155,30 @@
       fill(data.config);
     }
 
-    async function loadKeywords() {
+    function kwPageCount() {
+      const size = Number($('kwPageSize').value) || 50;
+      return Math.max(1, Math.ceil((kwTotal || 0) / size));
+    }
+
+    async function loadKeywords(page) {
+      if (page != null) kwPage = Math.max(1, page);
       const list = $('keywordList');
+      const pageSize = Number($('kwPageSize').value) || 50;
+      const q = String($('kwSearch').value || '').trim();
+      const params = new URLSearchParams({
+        page: String(kwPage),
+        page_size: String(pageSize),
+      });
+      if (q) params.set('q', q);
       try {
-        const data = await api('GET', '/api/cover-pool/keywords');
+        const data = await api('GET', '/api/cover-pool/keywords?' + params.toString());
         const keywords = data.keywords || [];
+        kwTotal = Number(data.total) || 0;
+        kwPage = Number(data.page) || kwPage;
+        const totalPages = kwPageCount();
+        $('kwPageMeta').textContent = `第 ${kwPage}/${totalPages} 页 · 共 ${kwTotal} 词`;
+        $('btnKwPrev').disabled = kwPage <= 1;
+        $('btnKwNext').disabled = kwPage >= totalPages;
         if (!keywords.length) {
           list.innerHTML = '<p class="muted" style="margin:0">暂无关键词（访问出图或手工添加后会出现在此）</p>';
           return;
@@ -153,9 +199,14 @@
     $('form').onsubmit = async (e) => {
       e.preventDefault();
       const count = Number($('count').value);
+      const workers = Number($('workers').value);
       const sizes = parseSizes($('sizes').value);
       if (!Number.isInteger(count) || count < 1 || count > 100) {
         toast('每个关键词的图片数量需为 1–100 的整数', false);
+        return;
+      }
+      if (!Number.isInteger(workers) || workers < 1 || workers > 32) {
+        toast('后台生成并发需为 1–32 的整数', false);
         return;
       }
       if (!sizes.length) {
@@ -164,7 +215,7 @@
       }
       $('btnSave').disabled = true;
       try {
-        const data = await api('PUT', '/api/cover-pool', { count, sizes });
+        const data = await api('PUT', '/api/cover-pool', { count, sizes, workers });
         fill(data.config);
         toast('已保存并生效', true);
       } catch (err) {
@@ -185,7 +236,7 @@
         const data = await api('POST', '/api/cover-pool/generate', { keywords });
         const r = data.result || {};
         toast(`已入队 ${r.accepted || 0}，跳过 ${r.skipped || 0}，失败 ${r.failed || 0}`, true);
-        loadKeywords();
+        loadKeywords(1);
       } catch (err) {
         toast(err.message, false);
       } finally {
@@ -194,7 +245,23 @@
     };
 
     $('btnRefreshKeywords').onclick = () => {
-      loadKeywords().catch((e) => toast(e.message, false));
+      loadKeywords(kwPage).catch((e) => toast(e.message, false));
+    };
+    $('btnKwPrev').onclick = () => {
+      loadKeywords(kwPage - 1).catch((e) => toast(e.message, false));
+    };
+    $('btnKwNext').onclick = () => {
+      loadKeywords(kwPage + 1).catch((e) => toast(e.message, false));
+    };
+    $('kwPageSize').onchange = () => {
+      loadKeywords(1).catch((e) => toast(e.message, false));
+    };
+    let kwSearchTimer = null;
+    $('kwSearch').oninput = () => {
+      clearTimeout(kwSearchTimer);
+      kwSearchTimer = setTimeout(() => {
+        loadKeywords(1).catch((e) => toast(e.message, false));
+      }, 250);
     };
 
     async function loadSizeStats() {
@@ -242,7 +309,7 @@
     if (requireToken()) {
       renderNav('covers.html');
       load().catch(e => toast(e.message, false));
-      loadKeywords().catch(e => toast(e.message, false));
+      loadKeywords(1).catch(e => toast(e.message, false));
       loadSizeStats().catch(e => toast(e.message, false));
     }
   </script>

@@ -19,6 +19,7 @@ type CoverPoolStore struct {
 
 type coverPoolDoc struct {
 	Count     int       `bson:"count"`
+	Workers   int       `bson:"workers,omitempty"`
 	Sizes     []sizeDoc `bson:"sizes,omitempty"`
 	UpdatedAt time.Time `bson:"updated_at,omitempty"`
 }
@@ -38,10 +39,11 @@ func (s *CoverPoolStore) Get(ctx context.Context) (coverpool.Settings, error) {
 	if err != nil {
 		return coverpool.Settings{}, err
 	}
-	settings := coverpool.Settings{Count: doc.Count, Sizes: sizesFromDoc(doc.Sizes)}
+	settings := coverpool.Settings{Count: doc.Count, Workers: doc.Workers, Sizes: sizesFromDoc(doc.Sizes)}
 	if settings.Count == 0 {
 		settings.Count = 10
 	}
+	// workers missing/0 → NormalizeSettings defaults to 2
 	return coverpool.NormalizeSettings(settings)
 }
 
@@ -55,6 +57,7 @@ func (s *CoverPoolStore) Set(ctx context.Context, settings coverpool.Settings) e
 		bson.M{"_id": "global"},
 		bson.M{"$set": bson.M{
 			"count":      normalized.Count,
+			"workers":    normalized.Workers,
 			"sizes":      sizesToDoc(normalized.Sizes),
 			"updated_at": time.Now().UTC(),
 		}},

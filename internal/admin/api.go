@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"logo23007go/internal/coverpool"
+	"logo23007go/internal/db"
 	"logo23007go/internal/ipguard"
 	"logo23007go/internal/sysmetrics"
 )
@@ -21,6 +22,7 @@ const sessionTTL = 7 * 24 * time.Hour
 type CoverKeywordRegistry interface {
 	UpsertMany(ctx context.Context, texts []string) error
 	List(ctx context.Context) ([]string, error)
+	ListPage(ctx context.Context, page, pageSize int, q string) (db.KeywordListResult, error)
 }
 
 type API struct {
@@ -269,8 +271,9 @@ func (a *API) handlePutCoverPool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Count int      `json:"count"`
-		Sizes []string `json:"sizes"`
+		Count   int      `json:"count"`
+		Sizes   []string `json:"sizes"`
+		Workers int      `json:"workers"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
@@ -279,18 +282,25 @@ func (a *API) handlePutCoverPool(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "每个关键词的图片数量需为 1-100 的整数")
 		return
 	}
+	if body.Workers != 0 && (body.Workers < 1 || body.Workers > 32) {
+		writeErr(w, http.StatusBadRequest, "后台生成并发需为 1-32 的整数")
+		return
+	}
 	sizes, err := parseCoverPoolSizeList(body.Sizes)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := a.CoverPool.Set(r.Context(), coverpool.Settings{Count: body.Count, Sizes: sizes}); err != nil {
+	if err := a.CoverPool.Set(r.Context(), coverpool.Settings{Count: body.Count, Sizes: sizes, Workers: body.Workers}); err != nil {
 		if strings.Contains(err.Error(), "outside") || strings.Contains(err.Error(), "invalid") || strings.Contains(err.Error(), "too many") || strings.Contains(err.Error(), "too large") {
 			writeErr(w, http.StatusBadRequest, "关键词图片池配置无效: "+err.Error())
 			return
 		}
 		writeErr(w, http.StatusInternalServerError, "保存关键词图片池配置失败")
 		return
+	}
+	if a.Prewarm != nil && a.Prewarm.Scheduler != nil {
+		a.Prewarm.Scheduler.SetMaxConcurrent(a.CoverPool.Workers())
 	}
 	writeCoverPoolConfig(w, a.CoverPool.Snapshot())
 }
@@ -315,8 +325,9 @@ func writeCoverPoolConfig(w http.ResponseWriter, settings coverpool.Settings) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true,
 		"config": map[string]any{
-			"count": settings.Count,
-			"sizes": sizes,
+			"count":   settings.Count,
+			"sizes":   sizes,
+			"workers": settings.Workers,
 		},
 	})
 }
@@ -358,17 +369,33 @@ func (a *API) handleListCoverKeywords(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "关键词图片池配置暂不可用")
 		return
 	}
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	pageSize, _ := strconv.Atoi(r.URL.Query().Get("page_size"))
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 50
+	}
+	if pageSize > 200 {
+		pageSize = 200
+	}
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	if a.Keywords == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "keywords": []any{}})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": true, "keywords": []any{}, "total": 0, "page": page, "page_size": pageSize,
+		})
 		return
 	}
-	texts, err := a.Keywords.List(r.Context())
+	result, err := a.Keywords.ListPage(r.Context(), page, pageSize, q)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	statuses := coverpool.StatusFor(a.Pool, a.CoverPool, texts)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "keywords": statuses})
+	statuses := coverpool.StatusFor(a.Pool, a.CoverPool, result.Texts)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "keywords": statuses, "total": result.Total, "page": result.Page, "page_size": result.PageSize,
+	})
 }
 
 func (a *API) handleCoverSizeStats(w http.ResponseWriter, r *http.Request) {

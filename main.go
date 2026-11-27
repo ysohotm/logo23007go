@@ -51,7 +51,8 @@ func main() {
 		os.Exit(1)
 	}
 	// 控制面（后台鉴权、ipguard）独立小连接池，避免被图片流量耗尽
-	ctrlDB, err := db.NewSiteDbWithPool(context.Background(), 4)
+	// 控制面（词库/配置/鉴权）并发更高：自动收词与后台查询共用，避免 maxPoolSize=4 被打满
+	ctrlDB, err := db.NewSiteDbWithPool(context.Background(), 32)
 	if err != nil {
 		logger.Error("mongo ctrl connect failed", "err", err)
 		os.Exit(1)
@@ -132,10 +133,22 @@ func main() {
 	}
 	var poolCancel context.CancelFunc
 	if pool != nil {
+		go func() {
+			if err := pool.RebuildIndex(); err != nil {
+				logger.Warn("cover pool index rebuild failed", "err", err)
+			} else {
+				logger.Info("cover pool index ready")
+			}
+		}()
 		var poolCtx context.Context
 		poolCtx, poolCancel = context.WithCancel(context.Background())
-		h.PoolScheduler = coverpool.NewScheduler(poolCtx, pool, envInt("COVER_POOL_WORKERS", 2), envInt("COVER_POOL_QUEUE", 256), h, logger)
-		logger.Info("cover pool", "dir", poolDir, "count", poolConfig.Count(), "sizes", coverpool.FormatSizes(poolConfig.Sizes()))
+		w := poolConfig.Workers()
+		if env := envInt("COVER_POOL_WORKERS", 0); env > 0 {
+			w = env
+		}
+		h.PoolScheduler = coverpool.NewScheduler(poolCtx, pool, w, envInt("COVER_POOL_QUEUE", 256), h, logger)
+		h.PoolScheduler.SetMaxConcurrent(w)
+		logger.Info("cover pool", "dir", poolDir, "count", poolConfig.Count(), "sizes", coverpool.FormatSizes(poolConfig.Sizes()), "workers", w)
 	}
 
 	mux := http.NewServeMux()

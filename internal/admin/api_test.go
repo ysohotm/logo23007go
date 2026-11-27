@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"logo23007go/internal/coverpool"
+	"logo23007go/internal/db"
 	"logo23007go/internal/ipguard"
 	"logo23007go/internal/sysmetrics"
 )
@@ -24,14 +25,16 @@ func (f *fakeCoverPoolStore) Get(context.Context) (coverpool.Settings, error) {
 		return coverpool.DefaultSettings(), nil
 	}
 	return coverpool.Settings{
-		Count: f.settings.Count,
-		Sizes: append([][2]int(nil), f.settings.Sizes...),
+		Count:   f.settings.Count,
+		Sizes:   append([][2]int(nil), f.settings.Sizes...),
+		Workers: f.settings.Workers,
 	}, nil
 }
 func (f *fakeCoverPoolStore) Set(_ context.Context, settings coverpool.Settings) error {
 	f.settings = coverpool.Settings{
-		Count: settings.Count,
-		Sizes: append([][2]int(nil), settings.Sizes...),
+		Count:   settings.Count,
+		Sizes:   append([][2]int(nil), settings.Sizes...),
+		Workers: settings.Workers,
 	}
 	return nil
 }
@@ -366,12 +369,15 @@ func TestCoverPoolConfig(t *testing.T) {
 	}
 	tok := setupToken(t, mux)
 
-	assertConfig := func(method string, body any, wantCount int, wantSizes ...string) {
+	assertConfig := func(method string, body any, wantCount, wantWorkers int, wantSizes ...string) {
 		t.Helper()
 		code, out := do(t, mux, method, "/api/cover-pool", tok, body)
 		config, _ := out["config"].(map[string]any)
 		if code != http.StatusOK || out["ok"] != true || config["count"] != float64(wantCount) {
 			t.Fatalf("%s cover pool: %d %v, want count %d", method, code, out, wantCount)
+		}
+		if config["workers"] != float64(wantWorkers) {
+			t.Fatalf("%s workers = %v, want %d", method, config["workers"], wantWorkers)
 		}
 		gotSizes, _ := config["sizes"].([]any)
 		if len(gotSizes) != len(wantSizes) {
@@ -383,12 +389,12 @@ func TestCoverPoolConfig(t *testing.T) {
 			}
 		}
 	}
-	assertConfig("GET", nil, 10, "600x800")
-	assertConfig("PUT", map[string]any{"count": 20, "sizes": []string{"600x800", "300x400"}}, 20, "600x800", "300x400")
-	if store.settings.Count != 20 || len(store.settings.Sizes) != 2 {
+	assertConfig("GET", nil, 10, coverpool.DefaultSettings().Workers, "600x800")
+	assertConfig("PUT", map[string]any{"count": 20, "sizes": []string{"600x800", "300x400"}, "workers": 8}, 20, 8, "600x800", "300x400")
+	if store.settings.Count != 20 || len(store.settings.Sizes) != 2 || store.settings.Workers != 8 {
 		t.Fatalf("stored = %+v", store.settings)
 	}
-	assertConfig("GET", nil, 20, "600x800", "300x400")
+	assertConfig("GET", nil, 20, 8, "600x800", "300x400")
 
 	for _, count := range []int{0, 101} {
 		code, out := do(t, mux, "PUT", "/api/cover-pool", tok, map[string]any{"count": count, "sizes": []string{"600x800"}})
@@ -397,10 +403,16 @@ func TestCoverPoolConfig(t *testing.T) {
 			t.Fatalf("count %d should be rejected: %d %v", count, code, out)
 		}
 	}
+	for _, workers := range []int{-1, 33} {
+		code, out := do(t, mux, "PUT", "/api/cover-pool", tok, map[string]any{"count": 10, "sizes": []string{"600x800"}, "workers": workers})
+		if code != http.StatusBadRequest || out["error"] == nil {
+			t.Fatalf("workers %d should be rejected: %d %v", workers, code, out)
+		}
+	}
 	if code, out := do(t, mux, "PUT", "/api/cover-pool", tok, map[string]any{"count": 10, "sizes": []string{"bad"}}); code != http.StatusBadRequest || out["error"] == nil {
 		t.Fatalf("bad size should 400: %d %v", code, out)
 	}
-	assertConfig("GET", nil, 20, "600x800", "300x400")
+	assertConfig("GET", nil, 20, 8, "600x800", "300x400")
 }
 
 func TestCoverPoolConfigUnavailable(t *testing.T) {
@@ -455,6 +467,38 @@ func (f *fakeKeywords) UpsertMany(_ context.Context, texts []string) error {
 
 func (f *fakeKeywords) List(context.Context) ([]string, error) {
 	return append([]string(nil), f.texts...), nil
+}
+
+func (f *fakeKeywords) ListPage(_ context.Context, page, pageSize int, q string) (db.KeywordListResult, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 50
+	} else if pageSize > 200 {
+		pageSize = 200
+	}
+	q = strings.TrimSpace(q)
+	filtered := make([]string, 0, len(f.texts))
+	for _, t := range f.texts {
+		if q == "" || strings.Contains(t, q) {
+			filtered = append(filtered, t)
+		}
+	}
+	total := int64(len(filtered))
+	start := (page - 1) * pageSize
+	if start > len(filtered) {
+		start = len(filtered)
+	}
+	end := start + pageSize
+	if end > len(filtered) {
+		end = len(filtered)
+	}
+	texts := append([]string{}, filtered[start:end]...)
+	if texts == nil {
+		texts = []string{}
+	}
+	return db.KeywordListResult{Texts: texts, Total: total, Page: page, PageSize: pageSize}, nil
 }
 
 func TestCoverPoolGenerate(t *testing.T) {
@@ -551,6 +595,9 @@ func TestCoverPoolKeywordsList(t *testing.T) {
 	if len(kws) != 0 {
 		t.Fatalf("keywords = %v, want empty", kws)
 	}
+	if out["total"] != float64(0) || out["page"] != float64(1) || out["page_size"] != float64(50) {
+		t.Fatalf("empty page fields = %v", out)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	pool := coverpool.NewPool(t.TempDir())
@@ -589,9 +636,12 @@ func TestCoverPoolKeywordsList(t *testing.T) {
 		t.Fatalf("generate: %d %v", code, out)
 	}
 
-	code, out = do(t, mux, "GET", "/api/cover-pool/keywords", tok, nil)
+	code, out = do(t, mux, "GET", "/api/cover-pool/keywords?page=1&page_size=50", tok, nil)
 	if code != http.StatusOK || out["ok"] != true {
 		t.Fatalf("list keywords: %d %v", code, out)
+	}
+	if out["total"] != float64(1) || out["page"] != float64(1) || out["page_size"] != float64(50) {
+		t.Fatalf("page fields = total=%v page=%v page_size=%v", out["total"], out["page"], out["page_size"])
 	}
 	list, _ := out["keywords"].([]any)
 	if len(list) != 1 {
@@ -608,6 +658,27 @@ func TestCoverPoolKeywordsList(t *testing.T) {
 	sz, _ := sizes[0].(map[string]any)
 	if sz["w"] != float64(600) || sz["h"] != float64(800) || sz["target"] != float64(3) {
 		t.Fatalf("size progress = %v, want w=600 h=800 target=3", sz)
+	}
+
+	kw.texts = []string{"alpha", "beta", "gamma", "alpine"}
+	code, out = do(t, mux, "GET", "/api/cover-pool/keywords?page=1&page_size=1&q=alp", tok, nil)
+	if code != http.StatusOK {
+		t.Fatalf("paged keywords: %d %v", code, out)
+	}
+	if out["total"] != float64(2) || out["page"] != float64(1) || out["page_size"] != float64(1) {
+		t.Fatalf("filter page fields = %v", out)
+	}
+	list, _ = out["keywords"].([]any)
+	if len(list) != 1 {
+		t.Fatalf("page size slice = %d, want 1: %v", len(list), out)
+	}
+	code, out = do(t, mux, "GET", "/api/cover-pool/keywords?page=2&page_size=1&q=alp", tok, nil)
+	if code != http.StatusOK {
+		t.Fatalf("page 2: %d %v", code, out)
+	}
+	list, _ = out["keywords"].([]any)
+	if len(list) != 1 {
+		t.Fatalf("page 2 len = %d, want 1: %v", len(list), out)
 	}
 }
 

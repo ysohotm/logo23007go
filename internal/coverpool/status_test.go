@@ -14,11 +14,13 @@ func TestStatusForProgress(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	spec := Spec{Text: "alpha", Width: 600, Height: 800, Background: "", Format: FormatWebP}
-	if err := pool.Put(spec, 0, testWebP); err != nil {
+	// Non-empty backgrounds must still count (progress aggregates across backgrounds).
+	bgA := Spec{Text: "alpha", Width: 600, Height: 800, Background: "a.webp", Format: FormatWebP}
+	bgB := Spec{Text: "alpha", Width: 600, Height: 800, Background: "b.webp", Format: FormatWebP}
+	if err := pool.Put(bgA, 0, testWebP); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.Put(spec, 1, testWebP); err != nil {
+	if err := pool.Put(bgB, 0, testWebP); err != nil {
 		t.Fatal(err)
 	}
 

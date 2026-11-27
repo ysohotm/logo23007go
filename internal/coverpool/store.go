@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"time"
 )
 
@@ -71,6 +72,12 @@ type Meta struct {
 // Pool stores generated images under a content-addressed directory tree.
 type Pool struct {
 	root string
+
+	indexMu    sync.RWMutex
+	byTH       map[string]int // text\x00WxH → total images across backgrounds/formats
+	dirCount   map[string]int // pool dir path → image count (for reindex deltas)
+	indexBuilt bool
+	indexOnce  sync.Once
 }
 
 // NewPool creates a pool rooted at root. An empty root is unavailable.
@@ -129,7 +136,11 @@ func (p *Pool) Put(spec Spec, slot int, data []byte) error {
 		return err
 	}
 	name := fmt.Sprintf("%04d.%s", slot, format.Extension())
-	return writeAtomic(filepath.Join(dir, name), data)
+	if err := writeAtomic(filepath.Join(dir, name), data); err != nil {
+		return err
+	}
+	p.reindexDir(spec)
+	return nil
 }
 
 // Get reads a randomly selected image. Invalid images are removed and treated

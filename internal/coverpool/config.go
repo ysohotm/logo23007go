@@ -19,13 +19,16 @@ type Store interface {
 
 // Settings is the admin-editable cover-pool configuration.
 type Settings struct {
-	Count int      `json:"count"`
-	Sizes [][2]int `json:"sizes"`
+	Count   int      `json:"count"`
+	Sizes   [][2]int `json:"sizes"`
+	Workers int      `json:"workers"` // background fill concurrency
 }
 
 const (
-	defaultCount = 10
-	maxSizes     = 32
+	defaultCount   = 10
+	defaultWorkers = 2
+	maxSizes       = 32
+	maxWorkers     = 32
 )
 
 // DefaultSizes are pooled when Mongo has no sizes yet. Matches the app
@@ -34,16 +37,17 @@ func DefaultSizes() [][2]int {
 	return [][2]int{{600, 800}}
 }
 
-// DefaultSettings returns count=10 and DefaultSizes.
+// DefaultSettings returns count=10, workers=2 and DefaultSizes.
 func DefaultSettings() Settings {
-	return Settings{Count: defaultCount, Sizes: DefaultSizes()}
+	return Settings{Count: defaultCount, Sizes: DefaultSizes(), Workers: defaultWorkers}
 }
 
 // Config provides the current settings without reading the store on requests.
 type Config struct {
-	store  Store
-	logger *slog.Logger
-	count  atomic.Int64
+	store   Store
+	logger  *slog.Logger
+	count   atomic.Int64
+	workers atomic.Int64
 
 	mu    sync.RWMutex
 	sizes [][2]int
@@ -55,6 +59,7 @@ type Config struct {
 func NewConfig(store Store, logger *slog.Logger) *Config {
 	cfg := &Config{store: store, logger: logger, sizes: DefaultSizes()}
 	cfg.count.Store(defaultCount)
+	cfg.workers.Store(defaultWorkers)
 	return cfg
 }
 
@@ -68,6 +73,18 @@ func (c *Config) Count() int {
 		return defaultCount
 	}
 	return int(count)
+}
+
+// Workers returns background fill concurrency, defaulting to 2 for nil or invalid values.
+func (c *Config) Workers() int {
+	if c == nil {
+		return defaultWorkers
+	}
+	workers := c.workers.Load()
+	if workers < 1 || workers > maxWorkers {
+		return defaultWorkers
+	}
+	return int(workers)
 }
 
 // Sizes returns a copy of the allowlisted pool sizes.
@@ -95,9 +112,9 @@ func (c *Config) Allows(width, height int) bool {
 	return false
 }
 
-// Snapshot returns the current count and sizes for admin APIs.
+// Snapshot returns the current count, sizes and workers for admin APIs.
 func (c *Config) Snapshot() Settings {
-	return Settings{Count: c.Count(), Sizes: c.Sizes()}
+	return Settings{Count: c.Count(), Sizes: c.Sizes(), Workers: c.Workers()}
 }
 
 // Set validates and persists settings before making them visible locally.
@@ -167,15 +184,24 @@ func (c *Config) refresh(ctx context.Context) {
 
 func (c *Config) apply(settings Settings) {
 	c.count.Store(int64(settings.Count))
+	c.workers.Store(int64(settings.Workers))
 	c.mu.Lock()
 	c.sizes = append([][2]int(nil), settings.Sizes...)
 	c.mu.Unlock()
 }
 
-// NormalizeSettings validates count/sizes and fills defaults for empty sizes.
+// NormalizeSettings validates count/sizes/workers and fills defaults for empty sizes.
+// Workers 0 becomes the default (2); other values must be in 1..32.
 func NormalizeSettings(settings Settings) (Settings, error) {
 	if settings.Count < 1 || settings.Count > 100 {
 		return Settings{}, fmt.Errorf("coverpool: count %d outside 1..100", settings.Count)
+	}
+	workers := settings.Workers
+	if workers == 0 {
+		workers = defaultWorkers
+	}
+	if workers < 1 || workers > maxWorkers {
+		return Settings{}, fmt.Errorf("coverpool: workers %d outside 1..32", settings.Workers)
 	}
 	sizes, err := normalizeSizes(settings.Sizes)
 	if err != nil {
@@ -184,7 +210,7 @@ func NormalizeSettings(settings Settings) (Settings, error) {
 	if len(sizes) == 0 {
 		sizes = DefaultSizes()
 	}
-	return Settings{Count: settings.Count, Sizes: sizes}, nil
+	return Settings{Count: settings.Count, Sizes: sizes, Workers: workers}, nil
 }
 
 func normalizeSizes(in [][2]int) ([][2]int, error) {

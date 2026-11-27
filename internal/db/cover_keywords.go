@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -21,6 +22,14 @@ type coverKeywordDoc struct {
 	Text      string    `bson:"text"`
 	CreatedAt time.Time `bson:"created_at"`
 	UpdatedAt time.Time `bson:"updated_at"`
+}
+
+// KeywordListResult is a page of cover keyword texts.
+type KeywordListResult struct {
+	Texts    []string
+	Total    int64
+	Page     int
+	PageSize int
 }
 
 // UpsertMany inserts/updates normalized non-empty unique texts. Empty input is no-op.
@@ -84,6 +93,81 @@ func (s *CoverKeywordStore) List(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("cover keywords list: %w", err)
 	}
 	return out, nil
+}
+
+// ListPage returns a page of keyword texts. page>=1, pageSize 1..200 (default 50).
+// q trimmed; non-empty filters text with case-sensitive substring via quoted bson regex.
+// Sorted by updated_at desc. Texts is never nil.
+func (s *CoverKeywordStore) ListPage(ctx context.Context, page, pageSize int, q string) (KeywordListResult, error) {
+	page, pageSize = clampKeywordListPage(page, pageSize)
+	out := KeywordListResult{Texts: []string{}, Page: page, PageSize: pageSize}
+	if s == nil || s.Coll == nil {
+		return out, nil
+	}
+	filter := bson.M{}
+	q = strings.TrimSpace(q)
+	if q != "" {
+		filter["text"] = bson.M{"$regex": regexp.QuoteMeta(q)}
+	}
+	total, err := s.Coll.CountDocuments(ctx, filter)
+	if err != nil {
+		return out, fmt.Errorf("cover keywords count: %w", err)
+	}
+	out.Total = total
+	skip := int64(page-1) * int64(pageSize)
+	opts := options.Find().
+		SetSort(bson.D{{Key: "updated_at", Value: -1}}).
+		SetSkip(skip).
+		SetLimit(int64(pageSize))
+	cur, err := s.Coll.Find(ctx, filter, opts)
+	if err != nil {
+		return out, fmt.Errorf("cover keywords list page: %w", err)
+	}
+	defer cur.Close(ctx)
+
+	texts := make([]string, 0, pageSize)
+	for cur.Next(ctx) {
+		var doc coverKeywordDoc
+		if err := cur.Decode(&doc); err != nil {
+			return out, fmt.Errorf("cover keywords list page: %w", err)
+		}
+		text := doc.Text
+		if text == "" {
+			text = doc.ID
+		}
+		texts = append(texts, text)
+	}
+	if err := cur.Err(); err != nil {
+		return out, fmt.Errorf("cover keywords list page: %w", err)
+	}
+	out.Texts = texts
+	return out, nil
+}
+
+// EnsureIndexes creates an index on updated_at for list sorting.
+func (s *CoverKeywordStore) EnsureIndexes(ctx context.Context) error {
+	if s == nil || s.Coll == nil {
+		return nil
+	}
+	_, err := s.Coll.Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{{Key: "updated_at", Value: -1}},
+	})
+	if err != nil {
+		return fmt.Errorf("cover keywords indexes: %w", err)
+	}
+	return nil
+}
+
+func clampKeywordListPage(page, pageSize int) (int, int) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 50
+	} else if pageSize > 200 {
+		pageSize = 200
+	}
+	return page, pageSize
 }
 
 func normalizeCoverKeywords(texts []string) []string {
