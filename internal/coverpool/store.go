@@ -73,6 +73,8 @@ type Meta struct {
 type Pool struct {
 	root string
 
+	registry EntryRegistry
+
 	indexMu    sync.RWMutex
 	byTH       map[string]int // text\x00WxH → total images across backgrounds/formats
 	dirCount   map[string]int // pool dir path → image count (for reindex deltas)
@@ -83,6 +85,22 @@ type Pool struct {
 // NewPool creates a pool rooted at root. An empty root is unavailable.
 func NewPool(root string) *Pool {
 	return &Pool{root: root}
+}
+
+// SetRegistry attaches an optional EntryRegistry for inventory persistence.
+func (p *Pool) SetRegistry(r EntryRegistry) {
+	if p == nil {
+		return
+	}
+	p.registry = r
+}
+
+// Registry returns the attached EntryRegistry, or nil.
+func (p *Pool) Registry() EntryRegistry {
+	if p == nil {
+		return nil
+	}
+	return p.registry
 }
 
 // Paths returns the directory for spec without creating it.
@@ -215,6 +233,9 @@ func (p *Pool) Count(spec Spec) (int, error) {
 	}
 	return len(present), nil
 }
+
+// SpecID returns the content-addressed id for a pool Spec (sha256 hex).
+func SpecID(spec Spec) string { return hashKey(spec) }
 
 func hashKey(spec Spec) string {
 	h := sha256.New()

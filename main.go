@@ -117,6 +117,15 @@ func main() {
 		}
 		pool = coverpool.NewPool(poolDir)
 	}
+	if pool != nil {
+		entryStore := &db.CoverPoolEntryStore{Coll: ctrlDB.Collection("cover_pool_entries")}
+		entryIdxCtx, entryIdxCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := entryStore.EnsureIndexes(entryIdxCtx); err != nil {
+			logger.Warn("cover pool entries index", "err", err)
+		}
+		entryIdxCancel()
+		pool.SetRegistry(entryStore)
+	}
 	sizeStats := coverpool.NewSizeStats()
 	keywordStore := &db.CoverKeywordStore{Coll: ctrlDB.Collection("cover_keywords")}
 	h := &handlers.Home{
@@ -134,6 +143,7 @@ func main() {
 	var poolCancel context.CancelFunc
 	if pool != nil {
 		go func() {
+			// RebuildIndex builds in-memory index only (fast). Mongo inventory is filled via admin sync-registry API.
 			if err := pool.RebuildIndex(); err != nil {
 				logger.Warn("cover pool index rebuild failed", "err", err)
 			} else {

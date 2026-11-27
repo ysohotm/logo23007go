@@ -97,6 +97,8 @@ func (a *API) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/cover-pool/keywords", a.handleListCoverKeywords)
 	mux.HandleFunc("GET /api/cover-pool/size-stats", a.handleCoverSizeStats)
 	mux.HandleFunc("POST /api/cover-pool/size-stats/reset", a.handleCoverSizeStatsReset)
+	mux.HandleFunc("POST /api/cover-pool/sync-registry", a.handleCoverPoolSyncRegistry)
+	mux.HandleFunc("POST /api/cover-pool/cleanup-backgrounds", a.handleCoverPoolCleanupBackgrounds)
 	mux.HandleFunc("GET /api/system/stats", a.handleSystemStats)
 	mux.HandleFunc("GET /api/ipguard/stats", a.handleStats)
 	mux.HandleFunc("POST /api/ipguard/stats/reset", a.handleStatsReset)
@@ -449,6 +451,38 @@ func (a *API) handleCoverSizeStatsReset(w http.ResponseWriter, r *http.Request) 
 	}
 	a.SizeStats.Reset()
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (a *API) handleCoverPoolSyncRegistry(w http.ResponseWriter, r *http.Request) {
+	if !a.authed(w, r) {
+		return
+	}
+	if a.Pool == nil || a.Pool.Registry() == nil {
+		writeErr(w, http.StatusServiceUnavailable, "封面池注册表暂不可用")
+		return
+	}
+	n, err := a.Pool.SyncRegistryFromDisk(r.Context())
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "upserted": n})
+}
+
+func (a *API) handleCoverPoolCleanupBackgrounds(w http.ResponseWriter, r *http.Request) {
+	if !a.authed(w, r) {
+		return
+	}
+	if a.Pool == nil {
+		writeErr(w, http.StatusServiceUnavailable, "封面池暂不可用")
+		return
+	}
+	deleted, failed, errs := a.Pool.CleanupNonEmptyBackgrounds(r.Context())
+	out := map[string]any{"ok": true, "deleted": deleted, "failed": failed}
+	if len(errs) > 0 {
+		out["errors"] = errs
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (a *API) handleSystemStats(w http.ResponseWriter, r *http.Request) {

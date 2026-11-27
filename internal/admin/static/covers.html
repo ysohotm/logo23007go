@@ -180,9 +180,13 @@
       <div class="card-head">
         <div>
           <h2>关键词进度</h2>
-          <p class="muted" style="margin:0">含访问自动收集与手工添加；进度按白名单尺寸统计磁盘池</p>
+          <p class="muted" style="margin:0">图片仍在硬盘；Mongo 只存池目录清单（词/尺寸/背景/张数/路径）方便查与清。进度优先读空背景池记录。</p>
         </div>
-        <button id="btnRefreshKeywords" type="button" class="secondary">刷新进度</button>
+        <div class="row">
+          <button id="btnSyncRegistry" type="button" class="secondary">同步池目录到 Mongo</button>
+          <button id="btnCleanupBackgrounds" type="button" class="secondary">清理多背景旧池</button>
+          <button id="btnRefreshKeywords" type="button" class="secondary">刷新进度</button>
+        </div>
       </div>
       <div class="kw-toolbar">
         <label for="kwSearch">搜索
@@ -209,7 +213,8 @@
       <ul class="notes muted">
         <li>访问 <code>/home/image</code>、<code>/vod/...</code>、<code>/home/imagekey</code> 时自动把关键词写入词库。</li>
         <li>尺寸排行可见本进程真实出图请求，可刷新/清零。</li>
-        <li>只有白名单尺寸会建池：按「词+尺寸」共用一池（不按请求背景拆分）；首图立即返回，其余后台补齐后随机。</li>
+        <li>只有白名单尺寸会建池：图片文件在硬盘；Mongo <code>cover_pool_entries</code> 只登记元数据。按「词+尺寸」共用一池（不按请求背景拆分）。</li>
+        <li>「同步池目录到 Mongo」扫硬盘入库；「清理多背景旧池」删掉 background 非空的旧目录及对应 Mongo 记录。</li>
         <li>未在列表中的尺寸不预生成、不随机，每次实时出图。</li>
         <li>减小数量或删掉某个尺寸，不删除已生成的历史文件。</li>
         <li>Cloudflare 缓存命中期间直接返回已缓存图片，不会重新随机。</li>
@@ -489,6 +494,31 @@
         toast(err.message, false);
       } finally {
         $('btnResetSizeStats').disabled = false;
+      }
+    };
+
+    $('btnSyncRegistry').onclick = async () => {
+      $('btnSyncRegistry').disabled = true;
+      try {
+        const data = await api('POST', '/api/cover-pool/sync-registry');
+        toast(`已同步 ${data.upserted || 0} 条到 Mongo`, true);
+      } catch (err) {
+        toast(err.message, false);
+      } finally {
+        $('btnSyncRegistry').disabled = false;
+      }
+    };
+
+    $('btnCleanupBackgrounds').onclick = async () => {
+      if (!confirm('确认清理带背景的旧池目录？此操作不可恢复。')) return;
+      $('btnCleanupBackgrounds').disabled = true;
+      try {
+        const data = await api('POST', '/api/cover-pool/cleanup-backgrounds');
+        toast(`清理完成：删除 ${data.deleted || 0}，失败 ${data.failed || 0}`, (data.failed || 0) === 0);
+      } catch (err) {
+        toast(err.message, false);
+      } finally {
+        $('btnCleanupBackgrounds').disabled = false;
       }
     };
 

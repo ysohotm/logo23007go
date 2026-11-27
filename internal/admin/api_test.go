@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -750,6 +752,154 @@ func TestCoverPoolKeywordsList(t *testing.T) {
 	list, _ = out["keywords"].([]any)
 	if len(list) != 1 {
 		t.Fatalf("page 2 len = %d, want 1: %v", len(list), out)
+	}
+}
+
+type memEntryRegistry struct {
+	entries []coverpool.PoolEntry
+}
+
+func (m *memEntryRegistry) Upsert(_ context.Context, e coverpool.PoolEntry) error {
+	for i, existing := range m.entries {
+		if existing.ID == e.ID {
+			m.entries[i] = e
+			return nil
+		}
+	}
+	m.entries = append(m.entries, e)
+	return nil
+}
+
+func (m *memEntryRegistry) UpsertMany(ctx context.Context, entries []coverpool.PoolEntry) error {
+	for _, e := range entries {
+		if err := m.Upsert(ctx, e); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *memEntryRegistry) Delete(_ context.Context, id string) error {
+	out := m.entries[:0]
+	for _, e := range m.entries {
+		if e.ID != id {
+			out = append(out, e)
+		}
+	}
+	m.entries = out
+	return nil
+}
+
+func (m *memEntryRegistry) SumCount(context.Context, string, int, int, bool) (int, error) {
+	return 0, nil
+}
+
+func (m *memEntryRegistry) ListBackground(_ context.Context, nonempty bool, limit int) ([]coverpool.PoolEntry, error) {
+	var out []coverpool.PoolEntry
+	for _, e := range m.entries {
+		hasBG := strings.TrimSpace(e.Background) != ""
+		if nonempty != hasBG {
+			continue
+		}
+		out = append(out, e)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func TestCoverPoolCleanupAndSync(t *testing.T) {
+	muxUnauth := newTestMux()
+	if code, _ := do(t, muxUnauth, "POST", "/api/cover-pool/cleanup-backgrounds", "", nil); code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated cleanup should be 401, got %d", code)
+	}
+	if code, _ := do(t, muxUnauth, "POST", "/api/cover-pool/sync-registry", "", nil); code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated sync should be 401, got %d", code)
+	}
+
+	muxNoPool := newTestMux()
+	tokNoPool := setupToken(t, muxNoPool)
+	if code, out := do(t, muxNoPool, "POST", "/api/cover-pool/cleanup-backgrounds", tokNoPool, nil); code != http.StatusServiceUnavailable {
+		t.Fatalf("nil Pool cleanup should 503: %d %v", code, out)
+	}
+	if code, out := do(t, muxNoPool, "POST", "/api/cover-pool/sync-registry", tokNoPool, nil); code != http.StatusServiceUnavailable {
+		t.Fatalf("nil Pool sync should 503: %d %v", code, out)
+	}
+
+	// Pool without Registry: cleanup walks disk and succeeds (0 if no nonempty metas).
+	muxNoReg := http.NewServeMux()
+	aNoReg := &API{
+		Auth: &fakeAuth{sessions: map[string]bool{}},
+		Pool: coverpool.NewPool(t.TempDir()),
+	}
+	aNoReg.Mount(muxNoReg)
+	tokNoReg := setupToken(t, muxNoReg)
+	if code, out := do(t, muxNoReg, "POST", "/api/cover-pool/cleanup-backgrounds", tokNoReg, nil); code != http.StatusOK || out["ok"] != true {
+		t.Fatalf("Pool without Registry cleanup should succeed: %d %v", code, out)
+	}
+
+	root := t.TempDir()
+	pool := coverpool.NewPool(root)
+	reg := &memEntryRegistry{}
+	pool.SetRegistry(reg)
+
+	bgDir := filepath.Join(root, "bg-entry")
+	emptyDir := filepath.Join(root, "empty-entry")
+	if err := os.MkdirAll(bgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(emptyDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bgMeta := []byte(`{"text":"a","width":600,"height":800,"background":"x.webp","format":"webp"}`)
+	emptyMeta := []byte(`{"text":"b","width":600,"height":800,"background":"","format":"webp"}`)
+	if err := os.WriteFile(filepath.Join(bgDir, "meta.json"), bgMeta, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(emptyDir, "meta.json"), emptyMeta, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bgSpec := coverpool.Spec{Text: "a", Width: 600, Height: 800, Background: "x.webp", Format: coverpool.FormatWebP}
+	emptySpec := coverpool.Spec{Text: "b", Width: 600, Height: 800, Background: "", Format: coverpool.FormatWebP}
+	bgID := coverpool.SpecID(bgSpec)
+	emptyID := coverpool.SpecID(emptySpec)
+	reg.entries = []coverpool.PoolEntry{
+		{ID: bgID, Text: "a", Width: 600, Height: 800, Background: "x.webp", Format: coverpool.FormatWebP, Dir: bgDir},
+		{ID: emptyID, Text: "b", Width: 600, Height: 800, Background: "", Format: coverpool.FormatWebP, Dir: emptyDir},
+	}
+
+	mux := http.NewServeMux()
+	a := &API{
+		Auth: &fakeAuth{sessions: map[string]bool{}},
+		Pool: pool,
+	}
+	a.Mount(mux)
+	tok := setupToken(t, mux)
+
+	code, out := do(t, mux, "POST", "/api/cover-pool/cleanup-backgrounds", tok, nil)
+	if code != http.StatusOK || out["ok"] != true {
+		t.Fatalf("cleanup: %d %v", code, out)
+	}
+	if out["deleted"] != float64(1) || out["failed"] != float64(0) {
+		t.Fatalf("cleanup counts = deleted=%v failed=%v, want 1/0", out["deleted"], out["failed"])
+	}
+	if _, err := os.Stat(bgDir); !os.IsNotExist(err) {
+		t.Fatalf("bg dir should be removed, stat err=%v", err)
+	}
+	if _, err := os.Stat(emptyDir); err != nil {
+		t.Fatalf("empty-bg dir should remain: %v", err)
+	}
+	if len(reg.entries) != 1 || reg.entries[0].ID != emptyID {
+		t.Fatalf("registry after cleanup = %+v, want only empty-bg entry", reg.entries)
+	}
+
+	code, out = do(t, mux, "POST", "/api/cover-pool/sync-registry", tok, nil)
+	if code != http.StatusOK || out["ok"] != true {
+		t.Fatalf("sync: %d %v", code, out)
+	}
+	if out["upserted"] == nil {
+		t.Fatalf("sync missing upserted: %v", out)
 	}
 }
 
