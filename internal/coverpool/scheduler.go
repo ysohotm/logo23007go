@@ -29,10 +29,25 @@ type Scheduler struct {
 
 	maxConcurrent atomic.Int64
 	inflightGen   atomic.Int64
+	completed     atomic.Int64
+	failed        atomic.Int64
 
 	mu       sync.Mutex
 	inflight map[Spec]struct{}
 	wg       sync.WaitGroup
+}
+
+// Progress is a snapshot of background fill activity.
+type Progress struct {
+	QueueLen    int   `json:"queue_len"`
+	QueueCap    int   `json:"queue_cap"`
+	Inflight    int   `json:"inflight"`     // specs claimed (queued or filling)
+	Active      int   `json:"active"`       // concurrent Generate calls
+	Workers     int   `json:"workers"`      // max concurrent Generate
+	WorkerProcs int   `json:"worker_procs"` // long-lived worker goroutines
+	Completed   int64 `json:"completed"`    // images generated OK this process
+	Failed      int64 `json:"failed"`       // generate failures this process
+	Busy        bool  `json:"busy"`         // queue_len>0 || inflight>0 || active>0
 }
 
 // NewScheduler starts background workers that stop when ctx is canceled.
@@ -88,6 +103,30 @@ func (s *Scheduler) MaxConcurrent() int {
 		return 2
 	}
 	return n
+}
+
+// Progress returns a nil-safe snapshot. Nil receiver → zero Progress with Workers=2.
+func (s *Scheduler) Progress() Progress {
+	if s == nil {
+		return Progress{Workers: 2}
+	}
+	s.mu.Lock()
+	inflight := len(s.inflight)
+	s.mu.Unlock()
+	queueLen := len(s.queue)
+	active := int(s.inflightGen.Load())
+	p := Progress{
+		QueueLen:    queueLen,
+		QueueCap:    cap(s.queue),
+		Inflight:    inflight,
+		Active:      active,
+		Workers:     s.MaxConcurrent(),
+		WorkerProcs: s.workers,
+		Completed:   s.completed.Load(),
+		Failed:      s.failed.Load(),
+		Busy:        queueLen > 0 || inflight > 0 || active > 0,
+	}
+	return p
 }
 
 // Ensure schedules one fill round per spec. A full queue rejects the task and
@@ -155,9 +194,11 @@ func (s *Scheduler) fill(task scheduleTask) {
 		err := s.generate.Generate(s.ctx, task.spec, slot)
 		s.releaseGenSlot()
 		if err != nil {
+			s.failed.Add(1)
 			s.logFailure(task.spec, slot, "generate cover", err)
 			return
 		}
+		s.completed.Add(1)
 	}
 }
 

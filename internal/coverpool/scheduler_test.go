@@ -228,6 +228,79 @@ func TestSchedulerCancelReleasesGenerationAndWait(t *testing.T) {
 	}
 }
 
+func TestSchedulerProgressNilSafe(t *testing.T) {
+	var scheduler *Scheduler
+	got := scheduler.Progress()
+	want := Progress{Workers: 2}
+	if got != want {
+		t.Fatalf("nil Progress() = %+v, want %+v", got, want)
+	}
+}
+
+func TestSchedulerProgressCounts(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pool := NewPool(t.TempDir())
+	generator := &blockingGenerator{
+		started: make(chan generateCall, 8),
+		release: make(chan error, 8),
+		pool:    pool,
+	}
+	scheduler := NewScheduler(ctx, pool, 2, 8, generator, nil)
+	spec := testSpec("progress")
+	const target = 4
+
+	if !scheduler.Ensure(spec, target) {
+		t.Fatal("Ensure returned false")
+	}
+	receiveGenerateCall(t, generator.started)
+	p := scheduler.Progress()
+	if !p.Busy {
+		t.Fatalf("Progress while working: Busy=false, got %+v", p)
+	}
+	if p.Workers != scheduler.MaxConcurrent() {
+		t.Fatalf("Workers = %d, want %d", p.Workers, scheduler.MaxConcurrent())
+	}
+	if p.WorkerProcs != 2 {
+		t.Fatalf("WorkerProcs = %d, want 2", p.WorkerProcs)
+	}
+	if p.QueueCap != 8 {
+		t.Fatalf("QueueCap = %d, want 8", p.QueueCap)
+	}
+
+	generator.release <- nil
+	deadline := time.Now().Add(2 * time.Second)
+	for scheduler.Progress().Completed < 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for Completed >= 1")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if p := scheduler.Progress(); p.Completed < 1 {
+		t.Fatalf("Completed = %d, want >= 1", p.Completed)
+	}
+
+	for i := 1; i < target; i++ {
+		receiveGenerateCall(t, generator.started)
+		generator.release <- nil
+	}
+	waitSchedulerIdle(t, scheduler)
+
+	p = scheduler.Progress()
+	if p.Completed != int64(target) {
+		t.Fatalf("final Completed = %d, want %d", p.Completed, target)
+	}
+	if p.Failed != 0 {
+		t.Fatalf("Failed = %d, want 0", p.Failed)
+	}
+	if p.Busy {
+		t.Fatalf("final Progress still Busy: %+v", p)
+	}
+	if p.Inflight != 0 || p.Active != 0 || p.QueueLen != 0 {
+		t.Fatalf("final Progress not idle: %+v", p)
+	}
+}
+
 func TestSchedulerSetMaxConcurrent(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -36,6 +36,28 @@
     }
     .kw-chip.done { color: var(--muted); opacity: .85; }
     .kw-chip.todo { color: var(--text); font-weight: 600; border-color: var(--accent); }
+    .gen-progress-bar {
+      height: 8px; border-radius: 999px; background: var(--input);
+      border: 1px solid var(--border); overflow: hidden; margin: 12px 0 0;
+      transition: all .3s ease-in-out;
+    }
+    .gen-progress-bar > span {
+      display: block; height: 100%; width: 0%;
+      background: var(--accent); border-radius: 999px;
+      transition: width .3s ease-in-out;
+    }
+    .gen-progress-bar.busy {
+      border-color: var(--accent);
+      background: color-mix(in srgb, var(--accent) 12%, var(--input));
+    }
+    .gen-progress-bar.busy.indeterminate > span {
+      width: 40% !important;
+      animation: gen-progress-slide 1.2s ease-in-out infinite;
+    }
+    @keyframes gen-progress-slide {
+      0% { transform: translateX(-120%); }
+      100% { transform: translateX(280%); }
+    }
   </style>
 </head>
 <body>
@@ -56,6 +78,18 @@
         <button id="btnSave" type="submit">保存并生效</button>
       </div>
     </form>
+
+    <div class="card" style="max-width:640px">
+      <h2>后台生成进度</h2>
+      <p class="muted" style="margin:0 0 12px">本进程实时队列与出图进度，忙碌时自动刷新</p>
+      <div class="row actions" style="margin-top:0; margin-bottom:12px; justify-content:flex-end">
+        <button id="btnRefreshProgress" type="button">刷新进度</button>
+      </div>
+      <div id="genProgress" class="kw-list">
+        <p class="muted" style="margin:0">加载中…</p>
+      </div>
+      <div id="genProgressBar" class="gen-progress-bar" aria-hidden="true"><span></span></div>
+    </div>
 
     <div class="card" style="max-width:640px">
       <h2>请求尺寸排行</h2>
@@ -121,6 +155,8 @@
   <script>
     let kwPage = 1;
     let kwTotal = 0;
+    let progressTimer = null;
+    let progressPollCount = 0;
 
     function fill(config) {
       $('count').value = config.count;
@@ -153,6 +189,74 @@
     async function load() {
       const data = await api('GET', '/api/cover-pool');
       fill(data.config);
+    }
+
+    function stopProgressPolling() {
+      if (progressTimer != null) {
+        clearInterval(progressTimer);
+        progressTimer = null;
+      }
+    }
+
+    function startProgressPolling() {
+      if (progressTimer != null) return;
+      progressTimer = setInterval(() => {
+        loadProgress().catch((e) => toast(e.message, false));
+      }, 2000);
+    }
+
+    async function loadProgress() {
+      try {
+        const data = await api('GET', '/api/cover-pool/progress');
+        const p = data.progress || {};
+        const busy = !!p.busy;
+        const queueLen = Number(p.queue_len) || 0;
+        const queueCap = Number(p.queue_cap) || 0;
+        const inflight = Number(p.inflight) || 0;
+        const active = Number(p.active) || 0;
+        const workers = Number(p.workers) || 0;
+        const completed = Number(p.completed) || 0;
+        const failed = Number(p.failed) || 0;
+        const statusChip = busy
+          ? '<span class="kw-chip todo">忙碌中</span>'
+          : '<span class="kw-chip done">空闲</span>';
+        $('genProgress').innerHTML =
+          `<div class="kw-row"><span class="kw-text">状态</span><span class="kw-chips">${statusChip}</span></div>` +
+          `<div class="kw-row"><span class="kw-text">队列</span><span class="kw-chips"><span class="kw-chip">${queueLen} / ${queueCap}</span></span></div>` +
+          `<div class="kw-row"><span class="kw-text">处理中</span><span class="kw-chips"><span class="kw-chip">${inflight}</span></span></div>` +
+          `<div class="kw-row"><span class="kw-text">正在出图</span><span class="kw-chips"><span class="kw-chip">${active} / ${workers}</span></span></div>` +
+          `<div class="kw-row"><span class="kw-text">本进程已完成</span><span class="kw-chips"><span class="kw-chip">${completed}</span></span></div>` +
+          `<div class="kw-row"><span class="kw-text">失败</span><span class="kw-chips"><span class="kw-chip">${failed}</span></span></div>`;
+        const bar = $('genProgressBar');
+        const fill = bar.querySelector('span');
+        if (busy) {
+          bar.classList.add('busy');
+          if (queueCap > 0) {
+            bar.classList.remove('indeterminate');
+            const pct = Math.min(100, Math.round((queueLen / queueCap) * 100));
+            fill.style.width = pct + '%';
+          } else {
+            bar.classList.add('indeterminate');
+            fill.style.width = '40%';
+          }
+        } else {
+          bar.classList.remove('busy', 'indeterminate');
+          const pct = queueCap > 0 ? Math.min(100, Math.round((queueLen / queueCap) * 100)) : 0;
+          fill.style.width = pct + '%';
+        }
+        if (busy) {
+          progressPollCount += 1;
+          if (progressPollCount % 3 === 0) {
+            loadKeywords(kwPage).catch((e) => toast(e.message, false));
+          }
+          startProgressPolling();
+        } else {
+          progressPollCount = 0;
+          stopProgressPolling();
+        }
+      } catch (err) {
+        toast(err.message, false);
+      }
     }
 
     function kwPageCount() {
@@ -237,11 +341,17 @@
         const r = data.result || {};
         toast(`已入队 ${r.accepted || 0}，跳过 ${r.skipped || 0}，失败 ${r.failed || 0}`, true);
         loadKeywords(1);
+        await loadProgress();
+        startProgressPolling();
       } catch (err) {
         toast(err.message, false);
       } finally {
         $('btnGenerate').disabled = false;
       }
+    };
+
+    $('btnRefreshProgress').onclick = () => {
+      loadProgress().catch((e) => toast(e.message, false));
     };
 
     $('btnRefreshKeywords').onclick = () => {
@@ -311,6 +421,7 @@
       load().catch(e => toast(e.message, false));
       loadKeywords(1).catch(e => toast(e.message, false));
       loadSizeStats().catch(e => toast(e.message, false));
+      loadProgress().catch(e => toast(e.message, false));
     }
   </script>
 </body>

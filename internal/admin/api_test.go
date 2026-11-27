@@ -574,6 +574,77 @@ func TestCoverPoolGenerate(t *testing.T) {
 	}
 }
 
+func TestCoverPoolProgress(t *testing.T) {
+	muxUnauth := newTestMux()
+	if code, _ := do(t, muxUnauth, "GET", "/api/cover-pool/progress", "", nil); code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated progress should be 401, got %d", code)
+	}
+
+	muxNil := http.NewServeMux()
+	aNil := &API{Auth: &fakeAuth{sessions: map[string]bool{}}}
+	aNil.Mount(muxNil)
+	tokNil := setupToken(t, muxNil)
+	code, out := do(t, muxNil, "GET", "/api/cover-pool/progress", tokNil, nil)
+	if code != http.StatusOK || out["ok"] != true {
+		t.Fatalf("nil Prewarm progress: %d %v", code, out)
+	}
+	progNil, _ := out["progress"].(map[string]any)
+	if progNil["workers"] != float64(2) {
+		t.Fatalf("nil Prewarm progress.workers = %v, want 2", progNil["workers"])
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	pool := coverpool.NewPool(t.TempDir())
+	cfg := coverpool.NewConfig(&fakeCoverPoolStore{}, nil)
+	gen := &stubCoverGen{pool: pool}
+	const queueCap = 8
+	scheduler := coverpool.NewScheduler(ctx, pool, 1, queueCap, gen, nil)
+	defer func() {
+		cancel()
+		scheduler.Wait()
+	}()
+	mux := http.NewServeMux()
+	a := &API{
+		Auth:      &fakeAuth{sessions: map[string]bool{}},
+		CoverPool: cfg,
+		Pool:      pool,
+		Prewarm: &coverpool.Prewarmer{
+			Config:    cfg,
+			Pool:      pool,
+			Scheduler: scheduler,
+			Generate:  gen,
+		},
+	}
+	a.Mount(mux)
+	tok := setupToken(t, mux)
+
+	code, out = do(t, mux, "GET", "/api/cover-pool/progress", tok, nil)
+	if code != http.StatusOK || out["ok"] != true {
+		t.Fatalf("progress: %d %v", code, out)
+	}
+	prog, ok := out["progress"].(map[string]any)
+	if !ok {
+		t.Fatalf("progress missing or wrong type: %v", out["progress"])
+	}
+	for _, key := range []string{"queue_len", "queue_cap", "inflight", "active", "workers", "worker_procs", "completed", "failed", "busy"} {
+		if _, exists := prog[key]; !exists {
+			t.Fatalf("progress missing field %q: %v", key, prog)
+		}
+	}
+	if prog["queue_cap"] != float64(queueCap) {
+		t.Fatalf("progress.queue_cap = %v, want %d", prog["queue_cap"], queueCap)
+	}
+	if prog["workers"] != float64(1) {
+		t.Fatalf("progress.workers = %v, want 1", prog["workers"])
+	}
+	if _, ok := prog["busy"].(bool); !ok {
+		t.Fatalf("progress.busy should be bool, got %T %v", prog["busy"], prog["busy"])
+	}
+	if _, ok := prog["completed"].(float64); !ok {
+		t.Fatalf("progress.completed should be number, got %T %v", prog["completed"], prog["completed"])
+	}
+}
+
 func TestCoverPoolKeywordsList(t *testing.T) {
 	muxUnauth := newTestMux()
 	if code, _ := do(t, muxUnauth, "GET", "/api/cover-pool/keywords", "", nil); code != http.StatusUnauthorized {

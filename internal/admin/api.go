@@ -93,6 +93,7 @@ func (a *API) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/cover-pool", a.handleGetCoverPool)
 	mux.HandleFunc("PUT /api/cover-pool", a.handlePutCoverPool)
 	mux.HandleFunc("POST /api/cover-pool/generate", a.handleGenerateCoverPool)
+	mux.HandleFunc("GET /api/cover-pool/progress", a.handleCoverPoolProgress)
 	mux.HandleFunc("GET /api/cover-pool/keywords", a.handleListCoverKeywords)
 	mux.HandleFunc("GET /api/cover-pool/size-stats", a.handleCoverSizeStats)
 	mux.HandleFunc("POST /api/cover-pool/size-stats/reset", a.handleCoverSizeStatsReset)
@@ -359,6 +360,17 @@ func (a *API) handleGenerateCoverPool(w http.ResponseWriter, r *http.Request) {
 	}
 	result := a.Prewarm.Enqueue(r.Context(), body.Keywords)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "result": result})
+}
+
+func (a *API) handleCoverPoolProgress(w http.ResponseWriter, r *http.Request) {
+	if !a.authed(w, r) {
+		return
+	}
+	prog := coverpool.Progress{Workers: 2}
+	if a.Prewarm != nil && a.Prewarm.Scheduler != nil {
+		prog = a.Prewarm.Scheduler.Progress()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "progress": prog})
 }
 
 func (a *API) handleListCoverKeywords(w http.ResponseWriter, r *http.Request) {
