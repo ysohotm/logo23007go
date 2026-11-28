@@ -66,6 +66,18 @@ func (f *fakeRegistry) ListDueRotate(context.Context, int, time.Time, int) ([]Po
 	return append([]PoolEntry(nil), f.dueRotate...), nil
 }
 
+func (f *fakeRegistry) EachEntry(_ context.Context, fn func(PoolEntry) error) error {
+	if f == nil || fn == nil {
+		return nil
+	}
+	for _, e := range f.upserted {
+		if err := fn(e); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func TestStatusForProgress(t *testing.T) {
 	ctx := context.Background()
 	pool := NewPool(t.TempDir())

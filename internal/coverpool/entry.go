@@ -32,4 +32,6 @@ type EntryRegistry interface {
 	// limit clamped 1..50000 (default 50 if <1).
 	// Sort: prefer oldest last_rotated_at / updated_at first.
 	ListDueRotate(ctx context.Context, minCount int, olderThan time.Time, limit int) ([]PoolEntry, error)
+	// EachEntry streams every inventory row (for startup index load). Stop on fn error.
+	EachEntry(ctx context.Context, fn func(PoolEntry) error) error
 }

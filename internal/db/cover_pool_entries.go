@@ -273,6 +273,32 @@ func (s *CoverPoolEntryStore) ListDueRotate(ctx context.Context, minCount int, o
 	return out, nil
 }
 
+// EachEntry streams every inventory document for building the in-memory index.
+func (s *CoverPoolEntryStore) EachEntry(ctx context.Context, fn func(coverpool.PoolEntry) error) error {
+	if s == nil || s.Coll == nil || fn == nil {
+		return nil
+	}
+	opts := options.Find().SetBatchSize(500)
+	cur, err := s.Coll.Find(ctx, bson.M{}, opts)
+	if err != nil {
+		return fmt.Errorf("cover pool entries each: %w", err)
+	}
+	defer cur.Close(ctx)
+	for cur.Next(ctx) {
+		var doc coverPoolEntryDoc
+		if err := cur.Decode(&doc); err != nil {
+			return fmt.Errorf("cover pool entries each: %w", err)
+		}
+		if err := fn(entryFromDoc(doc)); err != nil {
+			return err
+		}
+	}
+	if err := cur.Err(); err != nil {
+		return fmt.Errorf("cover pool entries each: %w", err)
+	}
+	return nil
+}
+
 func clampCoverPoolEntryLimit(limit int) int {
 	if limit < 1 {
 		return 1000

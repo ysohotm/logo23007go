@@ -194,3 +194,28 @@ func TestSyncRegistryFromDisk(t *testing.T) {
 		t.Fatalf("upserted = %#v", reg.upserted)
 	}
 }
+
+func TestLoadIndexFromRegistry(t *testing.T) {
+	pool := NewPool(t.TempDir())
+	reg := &fakeRegistry{upserted: []PoolEntry{
+		{ID: "a", Text: "x", Width: 300, Height: 400, Count: 4, Dir: "/a"},
+		{ID: "b", Text: "x", Width: 300, Height: 400, Count: 6, Dir: "/b"},
+		{ID: "c", Text: "y", Width: 300, Height: 400, Count: 2, Dir: "/c"},
+	}}
+	pool.SetRegistry(reg)
+	if err := pool.LoadIndexFromRegistry(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := pool.CountByTextSize("x", 300, 400); got != 10 {
+		t.Fatalf("CountByTextSize x = %d, want 10", got)
+	}
+	if got := pool.CountByTextSize("y", 300, 400); got != 2 {
+		t.Fatalf("CountByTextSize y = %d, want 2", got)
+	}
+	if err := pool.RebuildIndexPreferRegistry(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := pool.CountByTextSize("x", 300, 400); got != 10 {
+		t.Fatalf("after PreferRegistry = %d, want 10", got)
+	}
+}

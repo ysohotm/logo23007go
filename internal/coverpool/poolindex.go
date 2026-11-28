@@ -44,13 +44,61 @@ func (p *Pool) ensureIndex() {
 		if built {
 			return
 		}
-		_ = p.RebuildIndex()
+		_ = p.RebuildIndexPreferRegistry(context.Background())
 	})
 }
 
+// RebuildIndexPreferRegistry loads the in-memory index from Mongo when a
+// registry is attached; only falls back to walking disk meta.json if that fails
+// or no registry is set.
+func (p *Pool) RebuildIndexPreferRegistry(ctx context.Context) error {
+	if p != nil && p.Registry() != nil {
+		if err := p.LoadIndexFromRegistry(ctx); err == nil {
+			return nil
+		}
+	}
+	return p.RebuildIndex()
+}
+
+// LoadIndexFromRegistry builds byTH/dirCount from EntryRegistry (no disk walk).
+func (p *Pool) LoadIndexFromRegistry(ctx context.Context) error {
+	if p == nil || p.root == "" {
+		return errors.New("coverpool: pool is unavailable")
+	}
+	r := p.Registry()
+	if r == nil {
+		return errors.New("coverpool: registry unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	byTH := make(map[string]int)
+	dirCount := make(map[string]int)
+	n := 0
+	err := r.EachEntry(ctx, func(e PoolEntry) error {
+		key := textSizeKey(e.Text, e.Width, e.Height)
+		byTH[key] += e.Count
+		if e.Dir != "" {
+			dirCount[e.Dir] = e.Count
+		}
+		n++
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	p.indexMu.Lock()
+	p.byTH = byTH
+	p.dirCount = dirCount
+	p.indexBuilt = true
+	p.indexMu.Unlock()
+	_ = n
+	return nil
+}
+
 // RebuildIndex walks root/**/meta.json, counts images per dir, and aggregates
-// by text+width+height in memory only. Prefer calling once at process startup.
-// Mongo inventory is filled separately via SyncRegistryFromDisk (batched).
+// by text+width+height in memory only. Prefer LoadIndexFromRegistry / PreferRegistry
+// at startup when Mongo inventory is already synced.
 func (p *Pool) RebuildIndex() error {
 	if p == nil || p.root == "" {
 		return errors.New("coverpool: pool is unavailable")

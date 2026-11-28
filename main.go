@@ -144,8 +144,8 @@ func main() {
 	var poolCancel context.CancelFunc
 	if pool != nil {
 		go func() {
-			// RebuildIndex builds in-memory index only (fast). Mongo inventory is filled via admin sync-registry API.
-			if err := pool.RebuildIndex(); err != nil {
+			// Prefer Mongo cover_pool_entries (no disk walk). Disk RebuildIndex is fallback only.
+			if err := pool.RebuildIndexPreferRegistry(context.Background()); err != nil {
 				logger.Warn("cover pool index rebuild failed", "err", err)
 			} else {
 				logger.Info("cover pool index ready")
