@@ -244,10 +244,41 @@ func (p *Pool) reindexDir(spec Spec) {
 	p.indexBuilt = true
 	p.indexMu.Unlock()
 
-	_ = p.upsertRegistry(context.Background(), spec, dir, n)
+	_ = p.upsertRegistry(context.Background(), spec, dir, n, time.Time{})
 }
 
-func (p *Pool) upsertRegistry(ctx context.Context, spec Spec, dir string, n int) error {
+// reindexDirAt is reindexDir plus an optional last_rotated_at for the registry upsert.
+func (p *Pool) reindexDirAt(spec Spec, lastRotated time.Time) {
+	if p == nil || p.root == "" {
+		return
+	}
+	dir, err := p.Paths(spec)
+	if err != nil {
+		return
+	}
+	n := countImagesInDir(dir)
+	key := textSizeKey(spec.Text, spec.Width, spec.Height)
+
+	p.indexMu.Lock()
+	if p.byTH == nil {
+		p.byTH = make(map[string]int)
+	}
+	if p.dirCount == nil {
+		p.dirCount = make(map[string]int)
+	}
+	old := p.dirCount[dir]
+	p.byTH[key] += n - old
+	if p.byTH[key] < 0 {
+		p.byTH[key] = 0
+	}
+	p.dirCount[dir] = n
+	p.indexBuilt = true
+	p.indexMu.Unlock()
+
+	_ = p.upsertRegistry(context.Background(), spec, dir, n, lastRotated)
+}
+
+func (p *Pool) upsertRegistry(ctx context.Context, spec Spec, dir string, n int, lastRotated time.Time) error {
 	r := p.Registry()
 	if r == nil {
 		return nil
@@ -258,14 +289,15 @@ func (p *Pool) upsertRegistry(ctx context.Context, spec Spec, dir string, n int)
 	cctx, cancel := context.WithTimeout(ctx, registryTimeout)
 	defer cancel()
 	return r.Upsert(cctx, PoolEntry{
-		ID:         SpecID(spec),
-		Text:       spec.Text,
-		Width:      spec.Width,
-		Height:     spec.Height,
-		Background: spec.Background,
-		Format:     spec.Format,
-		Count:      n,
-		Dir:        dir,
+		ID:            SpecID(spec),
+		Text:          spec.Text,
+		Width:         spec.Width,
+		Height:        spec.Height,
+		Background:    spec.Background,
+		Format:        spec.Format,
+		Count:         n,
+		Dir:           dir,
+		LastRotatedAt: lastRotated,
 	})
 }
 

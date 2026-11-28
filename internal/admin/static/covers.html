@@ -130,7 +130,7 @@
             <p class="muted help">0=关闭；例如 5 或 1</p>
           </div>
           <div class="span-2">
-            <p class="muted help" style="margin:0">只对已满的空背景池：删最老 M 张再补新；图片仍在硬盘</p>
+            <p class="muted help" style="margin:0">只对已满空背景池；到期名单查 Mongo，删最老 M 张再补新（图片仍在硬盘）</p>
           </div>
           <div class="span-2">
             <label for="sizes">启用预生成 / 随机的尺寸</label>
@@ -194,7 +194,7 @@
       <div class="card-head">
         <div>
           <h2>关键词进度</h2>
-          <p class="muted" style="margin:0">图片仍在硬盘；Mongo 只存池目录清单（词/尺寸/背景/张数/路径）方便查与清。进度优先读空背景池记录。</p>
+          <p class="muted" style="margin:0">图片仍在硬盘；词/尺寸/张数/路径/上次轮换记在 Mongo，轮换与进度都查库不扫盘。</p>
         </div>
         <div class="row">
           <button id="btnSyncRegistry" type="button" class="secondary">同步池目录到 Mongo</button>

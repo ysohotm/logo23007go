@@ -81,12 +81,11 @@ func TestSaveMetaNewFileZeroLastRotatedAt(t *testing.T) {
 	}
 }
 
-func TestRotateOldestDeletesOldestAndUpdatesMeta(t *testing.T) {
+func TestRotateOldestDeletesOldestAndUpdatesRegistry(t *testing.T) {
 	p := NewPool(t.TempDir())
+	reg := &fakeRegistry{}
+	p.SetRegistry(reg)
 	spec := Spec{Text: "oldest", Width: 600, Height: 800, Background: "", Format: FormatJPEG}
-	if err := p.SaveMeta(spec); err != nil {
-		t.Fatal(err)
-	}
 	for slot := 0; slot < 4; slot++ {
 		if err := p.Put(spec, slot, testJPEG); err != nil {
 			t.Fatal(err)
@@ -102,6 +101,7 @@ func TestRotateOldestDeletesOldestAndUpdatesMeta(t *testing.T) {
 		}
 	}
 
+	reg.upserted = nil
 	deleted, err := p.RotateOldest(spec, 2)
 	if err != nil {
 		t.Fatal(err)
@@ -125,20 +125,11 @@ func TestRotateOldestDeletesOldestAndUpdatesMeta(t *testing.T) {
 	if err != nil || count != 2 {
 		t.Fatalf("Count() = %d, %v; want 2", count, err)
 	}
-
-	data, err := os.ReadFile(filepath.Join(dir, "meta.json"))
-	if err != nil {
-		t.Fatal(err)
+	if len(reg.upserted) == 0 || reg.upserted[len(reg.upserted)-1].LastRotatedAt.IsZero() {
+		t.Fatalf("registry LastRotatedAt not set: %+v", reg.upserted)
 	}
-	var meta Meta
-	if err := json.Unmarshal(data, &meta); err != nil {
-		t.Fatal(err)
-	}
-	if meta.LastRotatedAt.IsZero() {
-		t.Fatal("LastRotatedAt not set after RotateOldest")
-	}
-	if time.Since(meta.LastRotatedAt) > time.Minute {
-		t.Fatalf("LastRotatedAt too old: %v", meta.LastRotatedAt)
+	if reg.upserted[len(reg.upserted)-1].Count != 2 {
+		t.Fatalf("registry Count = %d, want 2", reg.upserted[len(reg.upserted)-1].Count)
 	}
 
 	if deleted, err := p.RotateOldest(spec, 0); err != nil || deleted != 0 {
@@ -151,11 +142,11 @@ func TestRotatorTickRotatesDueFullPoolAndEnsures(t *testing.T) {
 	defer cancel()
 
 	pool := NewPool(t.TempDir())
+	reg := &fakeRegistry{}
+	pool.SetRegistry(reg)
+
 	spec := Spec{Text: "due-full", Width: 600, Height: 800, Background: "", Format: FormatJPEG}
 	const target = 3
-	if err := pool.SaveMeta(spec); err != nil {
-		t.Fatal(err)
-	}
 	for slot := 0; slot < target; slot++ {
 		if err := pool.Put(spec, slot, testJPEG); err != nil {
 			t.Fatal(err)
@@ -169,6 +160,10 @@ func TestRotatorTickRotatesDueFullPoolAndEnsures(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	reg.dueRotate = []PoolEntry{{
+		ID: SpecID(spec), Text: spec.Text, Width: spec.Width, Height: spec.Height,
+		Background: "", Format: FormatJPEG, Count: target, Dir: dir,
+	}}
 
 	cfg := NewConfig(nil, nil)
 	if err := cfg.Set(ctx, Settings{
@@ -209,26 +204,22 @@ func TestRotatorTickRotatesDueFullPoolAndEnsures(t *testing.T) {
 	if count != target {
 		t.Fatalf("after Ensure Count() = %d, want %d", count, target)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "0000.jpg")); !os.IsNotExist(err) {
-		// oldest slot may or may not be 0000 depending on Put order + chtimes;
-		// just verify one file was deleted then refilled to target.
+	foundRotate := false
+	for _, e := range reg.upserted {
+		if e.ID == SpecID(spec) && !e.LastRotatedAt.IsZero() {
+			foundRotate = true
+			break
+		}
 	}
-	data, err := os.ReadFile(filepath.Join(dir, "meta.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var meta Meta
-	if err := json.Unmarshal(data, &meta); err != nil {
-		t.Fatal(err)
-	}
-	if meta.LastRotatedAt.IsZero() {
-		t.Fatal("meta LastRotatedAt still zero after Tick")
+	if !foundRotate {
+		t.Fatalf("registry missing LastRotatedAt after Tick: %+v", reg.upserted)
 	}
 
-	// Not due again until RotateEveryDays elapses.
+	// Second tick: due list empty → no more rotates.
+	reg.dueRotate = nil
 	second := rotator.Tick(ctx)
 	if second.Rotated != 0 {
-		t.Fatalf("second Tick Rotated = %d, want 0 (skipped=%d)", second.Rotated, second.Skipped)
+		t.Fatalf("second Tick Rotated = %d, want 0 (scanned=%d)", second.Rotated, second.Scanned)
 	}
 }
 

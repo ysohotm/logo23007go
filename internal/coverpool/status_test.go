@@ -5,9 +5,10 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 )
 
-// fakeRegistry is a minimal EntryRegistry for StatusFor / RemoveEntry tests.
+// fakeRegistry is a minimal EntryRegistry for StatusFor / RemoveEntry / rotate tests.
 type fakeRegistry struct {
 	sumCount     int
 	sumCountErr  error
@@ -17,6 +18,7 @@ type fakeRegistry struct {
 	upserted     []PoolEntry
 	upsertErr    error
 	deleteErr    error
+	dueRotate    []PoolEntry
 }
 
 func (f *fakeRegistry) Upsert(_ context.Context, e PoolEntry) error {
@@ -55,6 +57,13 @@ func (f *fakeRegistry) SumCount(_ context.Context, text string, width, height in
 
 func (f *fakeRegistry) ListBackground(context.Context, bool, int) ([]PoolEntry, error) {
 	return nil, nil
+}
+
+func (f *fakeRegistry) ListDueRotate(context.Context, int, time.Time, int) ([]PoolEntry, error) {
+	if f == nil {
+		return nil, nil
+	}
+	return append([]PoolEntry(nil), f.dueRotate...), nil
 }
 
 func TestStatusForProgress(t *testing.T) {

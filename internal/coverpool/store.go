@@ -148,7 +148,7 @@ func (p *Pool) SaveMeta(spec Spec) error {
 }
 
 // RotateOldest deletes up to n oldest image files (by mtime) in the pool dir for spec.
-// Updates meta last_rotated_at=now, reindexes, upserts registry. Returns deleted count.
+// Inventory (count + last_rotated_at) is updated in Mongo via the registry — meta.json is not required.
 func (p *Pool) RotateOldest(spec Spec, n int) (deleted int, err error) {
 	if n <= 0 {
 		return 0, nil
@@ -195,34 +195,8 @@ func (p *Pool) RotateOldest(spec Spec, n int) (deleted int, err error) {
 		deleted++
 	}
 
-	metaPath := filepath.Join(dir, "meta.json")
-	now := time.Now()
-	meta := Meta{
-		Text:          spec.Text,
-		Width:         spec.Width,
-		Height:        spec.Height,
-		Background:    spec.Background,
-		Format:        spec.Format,
-		CreatedAt:     now,
-		LastRotatedAt: now,
-	}
-	if existing, readErr := os.ReadFile(metaPath); readErr == nil {
-		var prev Meta
-		if json.Unmarshal(existing, &prev) == nil {
-			if !prev.CreatedAt.IsZero() {
-				meta.CreatedAt = prev.CreatedAt
-			}
-		}
-	}
-	data, err := json.MarshalIndent(meta, "", "  ")
-	if err != nil {
-		return deleted, err
-	}
-	data = append(data, '\n')
-	if err := writeAtomic(metaPath, data); err != nil {
-		return deleted, err
-	}
-	p.reindexDir(spec)
+	now := time.Now().UTC()
+	p.reindexDirAt(spec, now)
 	return deleted, nil
 }
 

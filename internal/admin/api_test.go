@@ -986,6 +986,10 @@ func (m *memEntryRegistry) ListBackground(_ context.Context, nonempty bool, limi
 	return out, nil
 }
 
+func (m *memEntryRegistry) ListDueRotate(context.Context, int, time.Time, int) ([]coverpool.PoolEntry, error) {
+	return nil, nil
+}
+
 func TestCoverPoolCleanupAndSync(t *testing.T) {
 	muxUnauth := newTestMux()
 	if code, _ := do(t, muxUnauth, "POST", "/api/cover-pool/cleanup-backgrounds", "", nil); code != http.StatusUnauthorized {

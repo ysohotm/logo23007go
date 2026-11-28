@@ -4,12 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"path/filepath"
-	"strings"
 	"time"
 )
 
 // Rotator periodically deletes the oldest images from full pools and re-enqueues fills.
+// Discovery uses Mongo EntryRegistry (not meta.json / disk walk).
 type Rotator struct {
 	Pool      *Pool
 	Config    *Config
@@ -50,9 +49,9 @@ func (r *Rotator) Run(ctx context.Context) {
 	}
 }
 
-// Tick performs one rotate pass over empty-background pools. Also used by admin.
+// Tick performs one rotate pass using Mongo inventory. Also used by admin.
 // When the scheduler queue is more than half full, Tick returns early with zeros
-// (no Skipped bump) to avoid piling more Ensure work onto a busy queue.
+// to avoid piling more Ensure work onto a busy queue.
 func (r *Rotator) Tick(ctx context.Context) RotateResult {
 	var result RotateResult
 	if r == nil || r.Config == nil || r.Pool == nil {
@@ -61,6 +60,13 @@ func (r *Rotator) Tick(ctx context.Context) RotateResult {
 	days := r.Config.RotateEveryDays()
 	m := r.Config.RotateCount()
 	if days <= 0 || m <= 0 {
+		return result
+	}
+	reg := r.Pool.Registry()
+	if reg == nil {
+		if r.Logger != nil {
+			r.Logger.Warn("coverpool rotate skipped: no registry")
+		}
 		return result
 	}
 	if r.Scheduler != nil {
@@ -73,52 +79,51 @@ func (r *Rotator) Tick(ctx context.Context) RotateResult {
 	if limit <= 0 {
 		limit = 50
 	}
-	threshold := time.Duration(days) * 24 * time.Hour
-	now := time.Now()
 	target := r.Config.Count()
+	olderThan := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
 
-	_ = r.Pool.walkMetaDetail(func(spec Spec, meta Meta, dir string, n int) error {
-		if ctx != nil {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	entries, err := reg.ListDueRotate(ctx, target, olderThan, limit)
+	if err != nil {
+		result.Failed++
+		result.Errors = append(result.Errors, err.Error())
+		if r.Logger != nil {
+			r.Logger.Warn("coverpool rotate list failed", "err", err)
 		}
-		if result.Rotated >= limit {
-			return filepath.SkipAll
+		return result
+	}
+	result.Scanned = len(entries)
+
+	for _, e := range entries {
+		if ctx.Err() != nil {
+			break
 		}
-		if strings.TrimSpace(spec.Background) != "" {
-			return nil
+		spec := Spec{
+			Text:       e.Text,
+			Width:      e.Width,
+			Height:     e.Height,
+			Background: e.Background,
+			Format:     e.Format,
 		}
-		result.Scanned++
-		if n < target {
-			result.Skipped++
-			return nil
-		}
-		due := false
-		if !meta.LastRotatedAt.IsZero() {
-			due = now.Sub(meta.LastRotatedAt) >= threshold
-		} else if oldest, ok := oldestImageModTime(dir, spec.Format); ok {
-			due = now.Sub(oldest) >= threshold
-		}
-		if !due {
-			result.Skipped++
-			return nil
+		if spec.Format == "" {
+			spec.Format = FormatWebP
 		}
 		if _, err := r.Pool.RotateOldest(spec, m); err != nil {
 			result.Failed++
 			if len(result.Errors) < 20 {
-				result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", SpecID(spec), err))
+				result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", e.ID, err))
 			}
 			if r.Logger != nil {
 				r.Logger.Warn("coverpool rotate failed", "text", spec.Text, "err", err)
 			}
-			return nil
+			continue
 		}
 		result.Rotated++
 		if r.Scheduler != nil && r.Scheduler.Ensure(spec, target) {
 			result.Enqueued++
 		}
-		return nil
-	})
+	}
 	return result
 }

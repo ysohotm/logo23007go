@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"testing"
+	"time"
 
 	"logo23007go/internal/coverpool"
 )
@@ -34,6 +35,9 @@ func TestCoverPoolEntryStoreNilSafe(t *testing.T) {
 	if got, err := nilStore.ListBackground(ctx, true, 10); err != nil || got != nil {
 		t.Fatalf("nil store ListBackground = %v, %v", got, err)
 	}
+	if got, err := nilStore.ListDueRotate(ctx, 1, time.Now(), 10); err != nil || got != nil {
+		t.Fatalf("nil store ListDueRotate = %v, %v", got, err)
+	}
 	if err := nilStore.EnsureIndexes(ctx); err != nil {
 		t.Fatalf("nil store EnsureIndexes: %v", err)
 	}
@@ -56,6 +60,9 @@ func TestCoverPoolEntryStoreNilSafe(t *testing.T) {
 	}
 	if got, err := empty.ListBackground(ctx, false, 0); err != nil || got != nil {
 		t.Fatalf("nil Coll ListBackground = %v, %v", got, err)
+	}
+	if got, err := empty.ListDueRotate(ctx, 0, time.Time{}, 0); err != nil || got != nil {
+		t.Fatalf("nil Coll ListDueRotate = %v, %v", got, err)
 	}
 	if err := empty.EnsureIndexes(ctx); err != nil {
 		t.Fatalf("nil Coll EnsureIndexes: %v", err)
