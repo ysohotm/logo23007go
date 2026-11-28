@@ -119,6 +119,19 @@
             <input id="workers" type="number" min="1" max="32" step="1" inputmode="numeric" required />
             <p class="muted help">越大越快越吃 CPU</p>
           </div>
+          <div>
+            <label for="rotate_every_days">每隔几天轮换</label>
+            <input id="rotate_every_days" type="number" min="0" max="3650" step="1" inputmode="numeric" />
+            <p class="muted help">0=关闭；例如 7</p>
+          </div>
+          <div>
+            <label for="rotate_count">每次换几张</label>
+            <input id="rotate_count" type="number" min="0" max="100" step="1" inputmode="numeric" />
+            <p class="muted help">0=关闭；例如 5 或 1</p>
+          </div>
+          <div class="span-2">
+            <p class="muted help" style="margin:0">只对已满的空背景池：删最老 M 张再补新；图片仍在硬盘</p>
+          </div>
           <div class="span-2">
             <label for="sizes">启用预生成 / 随机的尺寸</label>
             <textarea id="sizes" placeholder="每行一个，例如&#10;600x800&#10;300x400" required></textarea>
@@ -126,6 +139,7 @@
         </div>
         <div class="row actions">
           <button id="btnSave" type="submit">保存并生效</button>
+          <button id="btnRotate" type="button" class="secondary">立即轮换一轮</button>
         </div>
       </form>
 
@@ -233,6 +247,8 @@
     function fill(config) {
       $('count').value = config.count;
       $('workers').value = config.workers || 2;
+      $('rotate_every_days').value = config.rotate_every_days ?? 0;
+      $('rotate_count').value = config.rotate_count ?? 0;
       $('sizes').value = (config.sizes || []).join('\n');
     }
 
@@ -376,6 +392,8 @@
       e.preventDefault();
       const count = Number($('count').value);
       const workers = Number($('workers').value);
+      const rotate_every_days = Number($('rotate_every_days').value || 0);
+      const rotate_count = Number($('rotate_count').value || 0);
       const sizes = parseSizes($('sizes').value);
       if (!Number.isInteger(count) || count < 1 || count > 100) {
         toast('每个关键词的图片数量需为 1–100 的整数', false);
@@ -385,19 +403,41 @@
         toast('后台生成并发需为 1–32 的整数', false);
         return;
       }
+      if (!Number.isInteger(rotate_every_days) || rotate_every_days < 0 || rotate_every_days > 3650) {
+        toast('轮换间隔天数需为 0–3650 的整数', false);
+        return;
+      }
+      if (!Number.isInteger(rotate_count) || rotate_count < 0 || rotate_count > 100) {
+        toast('每次轮换张数需为 0–100 的整数', false);
+        return;
+      }
       if (!sizes.length) {
         toast('请至少填写一个尺寸，例如 600x800', false);
         return;
       }
       $('btnSave').disabled = true;
       try {
-        const data = await api('PUT', '/api/cover-pool', { count, sizes, workers });
+        const data = await api('PUT', '/api/cover-pool', { count, sizes, workers, rotate_every_days, rotate_count });
         fill(data.config);
         toast('已保存并生效', true);
       } catch (err) {
         toast(err.message, false);
       } finally {
         $('btnSave').disabled = false;
+      }
+    };
+
+    $('btnRotate').onclick = async () => {
+      $('btnRotate').disabled = true;
+      try {
+        const data = await api('POST', '/api/cover-pool/rotate', { limit: 50 });
+        toast(`轮换完成：换了 ${data.rotated || 0}，入队 ${data.enqueued || 0}，跳过 ${data.skipped || 0}，失败 ${data.failed || 0}`, (data.failed || 0) === 0);
+        await loadProgress();
+        startProgressPolling();
+      } catch (err) {
+        toast(err.message, false);
+      } finally {
+        $('btnRotate').disabled = false;
       }
     };
 
@@ -522,13 +562,15 @@
       }
     };
 
-    if (requireToken()) {
-      renderNav('covers.html');
-      load().catch(e => toast(e.message, false));
-      loadKeywords(1).catch(e => toast(e.message, false));
-      loadSizeStats().catch(e => toast(e.message, false));
-      loadProgress().catch(e => toast(e.message, false));
-    }
+    (async () => {
+      if (await requireAuth()) {
+        renderNav('covers.html');
+        load().catch(e => toast(e.message, false));
+        loadKeywords(1).catch(e => toast(e.message, false));
+        loadSizeStats().catch(e => toast(e.message, false));
+        loadProgress().catch(e => toast(e.message, false));
+      }
+    })();
   </script>
 </body>
 </html>

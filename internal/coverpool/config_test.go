@@ -31,9 +31,11 @@ func (s *fakeConfigStore) Get(context.Context) (Settings, error) {
 		}
 	}
 	out := Settings{
-		Count:   s.settings.Count,
-		Workers: s.settings.Workers,
-		Sizes:   append([][2]int(nil), s.settings.Sizes...),
+		Count:           s.settings.Count,
+		Workers:         s.settings.Workers,
+		Sizes:           append([][2]int(nil), s.settings.Sizes...),
+		RotateEveryDays: s.settings.RotateEveryDays,
+		RotateCount:     s.settings.RotateCount,
 	}
 	return out, s.getErr
 }
@@ -46,9 +48,11 @@ func (s *fakeConfigStore) Set(_ context.Context, settings Settings) error {
 		return s.setErr
 	}
 	s.settings = Settings{
-		Count:   settings.Count,
-		Workers: settings.Workers,
-		Sizes:   append([][2]int(nil), settings.Sizes...),
+		Count:           settings.Count,
+		Workers:         settings.Workers,
+		Sizes:           append([][2]int(nil), settings.Sizes...),
+		RotateEveryDays: settings.RotateEveryDays,
+		RotateCount:     settings.RotateCount,
 	}
 	return nil
 }
@@ -73,6 +77,12 @@ func TestConfigDefaults(t *testing.T) {
 	if got := nilConfig.Workers(); got != 2 {
 		t.Fatalf("nil Config.Workers() = %d, want 2", got)
 	}
+	if got := nilConfig.RotateEveryDays(); got != 0 {
+		t.Fatalf("nil Config.RotateEveryDays() = %d, want 0", got)
+	}
+	if got := nilConfig.RotateCount(); got != 0 {
+		t.Fatalf("nil Config.RotateCount() = %d, want 0", got)
+	}
 	if !reflect.DeepEqual(nilConfig.Sizes(), DefaultSizes()) {
 		t.Fatalf("nil Config.Sizes() = %v", nilConfig.Sizes())
 	}
@@ -87,11 +97,17 @@ func TestConfigDefaults(t *testing.T) {
 	if got := cfg.Workers(); got != 2 {
 		t.Fatalf("Workers() = %d before refresh, want default 2", got)
 	}
+	if got := cfg.RotateEveryDays(); got != 0 {
+		t.Fatalf("RotateEveryDays() = %d before refresh, want 0", got)
+	}
+	if got := cfg.RotateCount(); got != 0 {
+		t.Fatalf("RotateCount() = %d before refresh, want 0", got)
+	}
 	if !reflect.DeepEqual(cfg.Sizes(), DefaultSizes()) {
 		t.Fatalf("Sizes() = %v, want default", cfg.Sizes())
 	}
 	snap := DefaultSettings()
-	if snap.Workers != 2 || snap.Count != 10 {
+	if snap.Workers != 2 || snap.Count != 10 || snap.RotateEveryDays != 0 || snap.RotateCount != 0 {
 		t.Fatalf("DefaultSettings() = %+v", snap)
 	}
 }
@@ -110,6 +126,34 @@ func TestNormalizeSettingsWorkers(t *testing.T) {
 	}
 	if _, err := NormalizeSettings(Settings{Count: 10, Sizes: DefaultSizes(), Workers: 33}); err == nil {
 		t.Fatal("workers 33 accepted")
+	}
+}
+
+func TestNormalizeSettingsRotate(t *testing.T) {
+	got, err := NormalizeSettings(Settings{Count: 10, Sizes: DefaultSizes()})
+	if err != nil || got.RotateEveryDays != 0 || got.RotateCount != 0 {
+		t.Fatalf("rotate defaults 0: %+v, %v", got, err)
+	}
+	got, err = NormalizeSettings(Settings{Count: 10, Sizes: DefaultSizes(), RotateEveryDays: 7, RotateCount: 3})
+	if err != nil || got.RotateEveryDays != 7 || got.RotateCount != 3 {
+		t.Fatalf("rotate 7/3: %+v, %v", got, err)
+	}
+	got, err = NormalizeSettings(Settings{Count: 10, Sizes: DefaultSizes(), RotateEveryDays: 3650, RotateCount: 10})
+	if err != nil || got.RotateEveryDays != 3650 || got.RotateCount != 10 {
+		t.Fatalf("rotate max: %+v, %v", got, err)
+	}
+	got, err = NormalizeSettings(Settings{Count: 5, Sizes: DefaultSizes(), RotateCount: 99})
+	if err != nil || got.RotateCount != 5 {
+		t.Fatalf("rotate_count > count should clamp: %+v, %v", got, err)
+	}
+	if _, err := NormalizeSettings(Settings{Count: 10, Sizes: DefaultSizes(), RotateEveryDays: -1}); err == nil {
+		t.Fatal("negative rotate_every_days accepted")
+	}
+	if _, err := NormalizeSettings(Settings{Count: 10, Sizes: DefaultSizes(), RotateEveryDays: 3651}); err == nil {
+		t.Fatal("rotate_every_days 3651 accepted")
+	}
+	if _, err := NormalizeSettings(Settings{Count: 10, Sizes: DefaultSizes(), RotateCount: -1}); err == nil {
+		t.Fatal("negative rotate_count accepted")
 	}
 }
 
@@ -132,18 +176,23 @@ func TestConfigSet(t *testing.T) {
 	store := &fakeConfigStore{settings: DefaultSettings()}
 	cfg := NewConfig(store, nil)
 
-	want := Settings{Count: 42, Sizes: [][2]int{{600, 800}, {300, 400}}, Workers: 4}
+	want := Settings{Count: 42, Sizes: [][2]int{{600, 800}, {300, 400}}, Workers: 4, RotateEveryDays: 14, RotateCount: 5}
 	if err := cfg.Set(ctx, want); err != nil {
 		t.Fatal(err)
 	}
-	if got := cfg.Snapshot(); !reflect.DeepEqual(got.Sizes, want.Sizes) || got.Count != 42 || got.Workers != 4 {
+	if got := cfg.Snapshot(); !reflect.DeepEqual(got.Sizes, want.Sizes) || got.Count != 42 || got.Workers != 4 ||
+		got.RotateEveryDays != 14 || got.RotateCount != 5 {
 		t.Fatalf("Snapshot() = %+v", got)
 	}
-	if !reflect.DeepEqual(store.settings.Sizes, want.Sizes) || store.settings.Count != 42 || store.settings.Workers != 4 {
+	if !reflect.DeepEqual(store.settings.Sizes, want.Sizes) || store.settings.Count != 42 || store.settings.Workers != 4 ||
+		store.settings.RotateEveryDays != 14 || store.settings.RotateCount != 5 {
 		t.Fatalf("stored = %+v", store.settings)
 	}
 	if cfg.Workers() != 4 {
 		t.Fatalf("Workers() = %d, want 4", cfg.Workers())
+	}
+	if cfg.RotateEveryDays() != 14 || cfg.RotateCount() != 5 {
+		t.Fatalf("rotate getters = %d/%d, want 14/5", cfg.RotateEveryDays(), cfg.RotateCount())
 	}
 
 	if err := cfg.Set(ctx, Settings{Count: 0, Sizes: DefaultSizes()}); err == nil {

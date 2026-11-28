@@ -46,11 +46,9 @@
       }
       $('btnLogin').disabled = true;
       try {
-        const data = await api('POST', setupMode ? '/api/auth/setup' : '/api/auth/login', { username, password });
-        setToken(data.token);
+        await api('POST', setupMode ? '/api/auth/setup' : '/api/auth/login', { username, password });
         location.href = 'ipguard.html';
       } catch (err) {
-        clearToken();
         toast(err.message || String(err), false);
       } finally {
         $('btnLogin').disabled = false;
@@ -63,12 +61,10 @@
       } catch (err) {
         toast('无法获取账号状态：' + err.message, false);
       }
-      if (getToken()) {
-        try {
-          await api('GET', '/api/ipguard');
-          location.href = 'ipguard.html';
-        } catch (_) { clearToken(); }
-      }
+      try {
+        await api('GET', '/api/auth/me');
+        location.href = 'ipguard.html';
+      } catch (_) {}
     })();
   </script>
 </body>

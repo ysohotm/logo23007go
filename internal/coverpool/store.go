@@ -13,6 +13,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -61,12 +62,13 @@ type Spec struct {
 
 // Meta is stored alongside the images for inspection and recovery.
 type Meta struct {
-	Text       string      `json:"text"`
-	Width      int         `json:"width"`
-	Height     int         `json:"height"`
-	Background string      `json:"background"`
-	Format     ImageFormat `json:"format"`
-	CreatedAt  time.Time   `json:"created_at"`
+	Text          string      `json:"text"`
+	Width         int         `json:"width"`
+	Height        int         `json:"height"`
+	Background    string      `json:"background"`
+	Format        ImageFormat `json:"format"`
+	CreatedAt     time.Time   `json:"created_at"`
+	LastRotatedAt time.Time   `json:"last_rotated_at,omitempty"`
 }
 
 // Pool stores generated images under a content-addressed directory tree.
@@ -113,24 +115,115 @@ func (p *Pool) Paths(spec Spec) (string, error) {
 }
 
 // SaveMeta atomically records the original image-generation parameters.
+// If meta.json already exists, CreatedAt and LastRotatedAt are preserved;
+// only Text/Width/Height/Background/Format are refreshed. A new file gets
+// CreatedAt=now and a zero LastRotatedAt.
 func (p *Pool) SaveMeta(spec Spec) error {
 	dir, err := p.Paths(spec)
 	if err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(Meta{
+	metaPath := filepath.Join(dir, "meta.json")
+	meta := Meta{
 		Text:       spec.Text,
 		Width:      spec.Width,
 		Height:     spec.Height,
 		Background: spec.Background,
 		Format:     spec.Format,
 		CreatedAt:  time.Now(),
-	}, "", "  ")
+	}
+	if existing, err := os.ReadFile(metaPath); err == nil {
+		var prev Meta
+		if json.Unmarshal(existing, &prev) == nil {
+			meta.CreatedAt = prev.CreatedAt
+			meta.LastRotatedAt = prev.LastRotatedAt
+		}
+	}
+	data, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
 		return err
 	}
 	data = append(data, '\n')
-	return writeAtomic(filepath.Join(dir, "meta.json"), data)
+	return writeAtomic(metaPath, data)
+}
+
+// RotateOldest deletes up to n oldest image files (by mtime) in the pool dir for spec.
+// Updates meta last_rotated_at=now, reindexes, upserts registry. Returns deleted count.
+func (p *Pool) RotateOldest(spec Spec, n int) (deleted int, err error) {
+	if n <= 0 {
+		return 0, nil
+	}
+	if p == nil || p.root == "" {
+		return 0, errors.New("coverpool: pool is unavailable")
+	}
+	dir, err := p.Paths(spec)
+	if err != nil {
+		return 0, err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	type timedPath struct {
+		path string
+		mod  time.Time
+	}
+	files := make([]timedPath, 0, len(entries))
+	for _, path := range imagePaths(dir, entries, spec.Format) {
+		info, statErr := os.Stat(path)
+		if statErr != nil {
+			if errors.Is(statErr, fs.ErrNotExist) {
+				continue
+			}
+			return deleted, statErr
+		}
+		files = append(files, timedPath{path: path, mod: info.ModTime()})
+	}
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].mod.Before(files[j].mod)
+	})
+	if n > len(files) {
+		n = len(files)
+	}
+	for i := 0; i < n; i++ {
+		if remErr := os.Remove(files[i].path); remErr != nil && !errors.Is(remErr, fs.ErrNotExist) {
+			return deleted, remErr
+		}
+		deleted++
+	}
+
+	metaPath := filepath.Join(dir, "meta.json")
+	now := time.Now()
+	meta := Meta{
+		Text:          spec.Text,
+		Width:         spec.Width,
+		Height:        spec.Height,
+		Background:    spec.Background,
+		Format:        spec.Format,
+		CreatedAt:     now,
+		LastRotatedAt: now,
+	}
+	if existing, readErr := os.ReadFile(metaPath); readErr == nil {
+		var prev Meta
+		if json.Unmarshal(existing, &prev) == nil {
+			if !prev.CreatedAt.IsZero() {
+				meta.CreatedAt = prev.CreatedAt
+			}
+		}
+	}
+	data, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return deleted, err
+	}
+	data = append(data, '\n')
+	if err := writeAtomic(metaPath, data); err != nil {
+		return deleted, err
+	}
+	p.reindexDir(spec)
+	return deleted, nil
 }
 
 // Put validates data and atomically stores it in slot, replacing the same

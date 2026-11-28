@@ -133,8 +133,8 @@ func TestSaveMetaReadableAndAtomic(t *testing.T) {
 		t.Fatalf("incorrect metadata: %+v", meta)
 	}
 
-	before, err := os.ReadFile(metaPath)
-	if err != nil {
+	var first Meta
+	if err := json.Unmarshal(data, &first); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.SaveMeta(spec); err != nil {
@@ -144,8 +144,15 @@ func TestSaveMetaReadableAndAtomic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Equal(before, after) {
-		t.Fatal("metadata was not replaced on a subsequent save")
+	var second Meta
+	if err := json.Unmarshal(after, &second); err != nil {
+		t.Fatal(err)
+	}
+	if !second.CreatedAt.Equal(first.CreatedAt) {
+		t.Fatalf("CreatedAt not preserved on re-save: %v vs %v", second.CreatedAt, first.CreatedAt)
+	}
+	if !second.LastRotatedAt.Equal(first.LastRotatedAt) {
+		t.Fatalf("LastRotatedAt not preserved on re-save: %v vs %v", second.LastRotatedAt, first.LastRotatedAt)
 	}
 	spec.Text = "更新后的关键词"
 	if err := p.SaveMeta(spec); err != nil {

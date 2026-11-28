@@ -18,10 +18,12 @@ type CoverPoolStore struct {
 }
 
 type coverPoolDoc struct {
-	Count     int       `bson:"count"`
-	Workers   int       `bson:"workers,omitempty"`
-	Sizes     []sizeDoc `bson:"sizes,omitempty"`
-	UpdatedAt time.Time `bson:"updated_at,omitempty"`
+	Count           int       `bson:"count"`
+	Workers         int       `bson:"workers,omitempty"`
+	Sizes           []sizeDoc `bson:"sizes,omitempty"`
+	RotateEveryDays int       `bson:"rotate_every_days,omitempty"`
+	RotateCount     int       `bson:"rotate_count,omitempty"`
+	UpdatedAt       time.Time `bson:"updated_at,omitempty"`
 }
 
 type sizeDoc struct {
@@ -39,7 +41,13 @@ func (s *CoverPoolStore) Get(ctx context.Context) (coverpool.Settings, error) {
 	if err != nil {
 		return coverpool.Settings{}, err
 	}
-	settings := coverpool.Settings{Count: doc.Count, Workers: doc.Workers, Sizes: sizesFromDoc(doc.Sizes)}
+	settings := coverpool.Settings{
+		Count:           doc.Count,
+		Workers:         doc.Workers,
+		Sizes:           sizesFromDoc(doc.Sizes),
+		RotateEveryDays: doc.RotateEveryDays,
+		RotateCount:     doc.RotateCount,
+	}
 	if settings.Count == 0 {
 		settings.Count = 10
 	}
@@ -56,10 +64,12 @@ func (s *CoverPoolStore) Set(ctx context.Context, settings coverpool.Settings) e
 	_, err = s.Coll.UpdateOne(ctx,
 		bson.M{"_id": "global"},
 		bson.M{"$set": bson.M{
-			"count":      normalized.Count,
-			"workers":    normalized.Workers,
-			"sizes":      sizesToDoc(normalized.Sizes),
-			"updated_at": time.Now().UTC(),
+			"count":             normalized.Count,
+			"workers":           normalized.Workers,
+			"sizes":             sizesToDoc(normalized.Sizes),
+			"rotate_every_days": normalized.RotateEveryDays,
+			"rotate_count":      normalized.RotateCount,
+			"updated_at":        time.Now().UTC(),
 		}},
 		options.Update().SetUpsert(true),
 	)

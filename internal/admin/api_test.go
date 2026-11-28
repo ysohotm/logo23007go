@@ -27,16 +27,20 @@ func (f *fakeCoverPoolStore) Get(context.Context) (coverpool.Settings, error) {
 		return coverpool.DefaultSettings(), nil
 	}
 	return coverpool.Settings{
-		Count:   f.settings.Count,
-		Sizes:   append([][2]int(nil), f.settings.Sizes...),
-		Workers: f.settings.Workers,
+		Count:           f.settings.Count,
+		Sizes:           append([][2]int(nil), f.settings.Sizes...),
+		Workers:         f.settings.Workers,
+		RotateEveryDays: f.settings.RotateEveryDays,
+		RotateCount:     f.settings.RotateCount,
 	}, nil
 }
 func (f *fakeCoverPoolStore) Set(_ context.Context, settings coverpool.Settings) error {
 	f.settings = coverpool.Settings{
-		Count:   settings.Count,
-		Sizes:   append([][2]int(nil), settings.Sizes...),
-		Workers: settings.Workers,
+		Count:           settings.Count,
+		Sizes:           append([][2]int(nil), settings.Sizes...),
+		Workers:         settings.Workers,
+		RotateEveryDays: settings.RotateEveryDays,
+		RotateCount:     settings.RotateCount,
 	}
 	return nil
 }
@@ -216,6 +220,103 @@ func TestAuthFlowAndConfig(t *testing.T) {
 	}
 }
 
+func TestSessionCookieOnLoginSetup(t *testing.T) {
+	mux := newTestMux()
+
+	var buf bytes.Buffer
+	_ = json.NewEncoder(&buf).Encode(credentials{"admin", "secret1"})
+	r := httptest.NewRequest("POST", "/api/auth/setup", &buf)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatalf("setup: %d %s", w.Code, w.Body.String())
+	}
+	var out map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &out)
+	tok, _ := out["token"].(string)
+	if tok == "" {
+		t.Fatalf("setup missing token: %v", out)
+	}
+	c := findSetCookie(w, sessionCookieName)
+	if c == nil {
+		t.Fatalf("setup missing Set-Cookie %s: %v", sessionCookieName, w.Result().Cookies())
+	}
+	if c.Value != tok {
+		t.Fatalf("setup cookie value = %q, want token %q", c.Value, tok)
+	}
+
+	buf.Reset()
+	_ = json.NewEncoder(&buf).Encode(credentials{"admin", "secret1"})
+	r = httptest.NewRequest("POST", "/api/auth/login", &buf)
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatalf("login: %d %s", w.Code, w.Body.String())
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &out)
+	tok, _ = out["token"].(string)
+	if tok == "" {
+		t.Fatalf("login missing token: %v", out)
+	}
+	c = findSetCookie(w, sessionCookieName)
+	if c == nil {
+		t.Fatalf("login missing Set-Cookie %s", sessionCookieName)
+	}
+	if c.Value != tok {
+		t.Fatalf("login cookie value = %q, want token %q", c.Value, tok)
+	}
+}
+
+func TestCookieAuthWithoutHeader(t *testing.T) {
+	mux := newTestMux()
+	tok := setupToken(t, mux)
+
+	r := httptest.NewRequest("GET", "/api/ipguard", nil)
+	r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: tok})
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatalf("cookie-only auth should be 200, got %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestLogoutClearsCookie(t *testing.T) {
+	mux := newTestMux()
+	tok := setupToken(t, mux)
+
+	r := httptest.NewRequest("POST", "/api/auth/logout", nil)
+	r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: tok})
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	if w.Code != 200 {
+		t.Fatalf("logout: %d %s", w.Code, w.Body.String())
+	}
+	c := findSetCookie(w, sessionCookieName)
+	if c == nil {
+		t.Fatalf("logout missing clear Set-Cookie %s", sessionCookieName)
+	}
+	if c.MaxAge >= 0 && c.Value != "" {
+		t.Fatalf("logout cookie should be cleared (MaxAge<0 or empty), got MaxAge=%d Value=%q", c.MaxAge, c.Value)
+	}
+
+	r = httptest.NewRequest("GET", "/api/ipguard", nil)
+	r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: tok})
+	w = httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	if w.Code != 401 {
+		t.Fatalf("old cookie after logout should be 401, got %d", w.Code)
+	}
+}
+
+func findSetCookie(w *httptest.ResponseRecorder, name string) *http.Cookie {
+	for _, c := range w.Result().Cookies() {
+		if c.Name == name {
+			return c
+		}
+	}
+	return nil
+}
+
 func TestChangeCredentials(t *testing.T) {
 	mux := newTestMux()
 	_, out := do(t, mux, "POST", "/api/auth/setup", "", credentials{"admin", "secret1"})
@@ -371,7 +472,7 @@ func TestCoverPoolConfig(t *testing.T) {
 	}
 	tok := setupToken(t, mux)
 
-	assertConfig := func(method string, body any, wantCount, wantWorkers int, wantSizes ...string) {
+	assertConfig := func(method string, body any, wantCount, wantWorkers, wantRotateDays, wantRotateCount int, wantSizes ...string) {
 		t.Helper()
 		code, out := do(t, mux, method, "/api/cover-pool", tok, body)
 		config, _ := out["config"].(map[string]any)
@@ -380,6 +481,12 @@ func TestCoverPoolConfig(t *testing.T) {
 		}
 		if config["workers"] != float64(wantWorkers) {
 			t.Fatalf("%s workers = %v, want %d", method, config["workers"], wantWorkers)
+		}
+		if config["rotate_every_days"] != float64(wantRotateDays) {
+			t.Fatalf("%s rotate_every_days = %v, want %d", method, config["rotate_every_days"], wantRotateDays)
+		}
+		if config["rotate_count"] != float64(wantRotateCount) {
+			t.Fatalf("%s rotate_count = %v, want %d", method, config["rotate_count"], wantRotateCount)
 		}
 		gotSizes, _ := config["sizes"].([]any)
 		if len(gotSizes) != len(wantSizes) {
@@ -391,12 +498,16 @@ func TestCoverPoolConfig(t *testing.T) {
 			}
 		}
 	}
-	assertConfig("GET", nil, 10, coverpool.DefaultSettings().Workers, "600x800")
-	assertConfig("PUT", map[string]any{"count": 20, "sizes": []string{"600x800", "300x400"}, "workers": 8}, 20, 8, "600x800", "300x400")
-	if store.settings.Count != 20 || len(store.settings.Sizes) != 2 || store.settings.Workers != 8 {
+	assertConfig("GET", nil, 10, coverpool.DefaultSettings().Workers, 0, 0, "600x800")
+	assertConfig("PUT", map[string]any{
+		"count": 20, "sizes": []string{"600x800", "300x400"}, "workers": 8,
+		"rotate_every_days": 7, "rotate_count": 5,
+	}, 20, 8, 7, 5, "600x800", "300x400")
+	if store.settings.Count != 20 || len(store.settings.Sizes) != 2 || store.settings.Workers != 8 ||
+		store.settings.RotateEveryDays != 7 || store.settings.RotateCount != 5 {
 		t.Fatalf("stored = %+v", store.settings)
 	}
-	assertConfig("GET", nil, 20, 8, "600x800", "300x400")
+	assertConfig("GET", nil, 20, 8, 7, 5, "600x800", "300x400")
 
 	for _, count := range []int{0, 101} {
 		code, out := do(t, mux, "PUT", "/api/cover-pool", tok, map[string]any{"count": count, "sizes": []string{"600x800"}})
@@ -411,10 +522,76 @@ func TestCoverPoolConfig(t *testing.T) {
 			t.Fatalf("workers %d should be rejected: %d %v", workers, code, out)
 		}
 	}
+	for _, days := range []int{-1, 3651} {
+		code, out := do(t, mux, "PUT", "/api/cover-pool", tok, map[string]any{
+			"count": 10, "sizes": []string{"600x800"}, "rotate_every_days": days,
+		})
+		if code != http.StatusBadRequest || out["error"] == nil {
+			t.Fatalf("rotate_every_days %d should be rejected: %d %v", days, code, out)
+		}
+	}
+	for _, n := range []int{-1, 101} {
+		code, out := do(t, mux, "PUT", "/api/cover-pool", tok, map[string]any{
+			"count": 10, "sizes": []string{"600x800"}, "rotate_count": n,
+		})
+		if code != http.StatusBadRequest || out["error"] == nil {
+			t.Fatalf("rotate_count %d should be rejected: %d %v", n, code, out)
+		}
+	}
 	if code, out := do(t, mux, "PUT", "/api/cover-pool", tok, map[string]any{"count": 10, "sizes": []string{"bad"}}); code != http.StatusBadRequest || out["error"] == nil {
 		t.Fatalf("bad size should 400: %d %v", code, out)
 	}
-	assertConfig("GET", nil, 20, 8, "600x800", "300x400")
+	assertConfig("GET", nil, 20, 8, 7, 5, "600x800", "300x400")
+}
+
+func TestCoverPoolRotate(t *testing.T) {
+	muxUnauth := newTestMux()
+	if code, _ := do(t, muxUnauth, "POST", "/api/cover-pool/rotate", "", nil); code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated rotate should be 401, got %d", code)
+	}
+
+	muxNoRot := http.NewServeMux()
+	aNoRot := &API{
+		Auth:      &fakeAuth{sessions: map[string]bool{}},
+		CoverPool: coverpool.NewConfig(&fakeCoverPoolStore{}, nil),
+	}
+	aNoRot.Mount(muxNoRot)
+	tokNoRot := setupToken(t, muxNoRot)
+	if code, out := do(t, muxNoRot, "POST", "/api/cover-pool/rotate", tokNoRot, nil); code != http.StatusServiceUnavailable {
+		t.Fatalf("rotate without Rotator should 503: %d %v", code, out)
+	}
+
+	pool := coverpool.NewPool(t.TempDir())
+	store := &fakeCoverPoolStore{}
+	cfg := coverpool.NewConfig(store, nil)
+	ctx := context.Background()
+	if err := cfg.Set(ctx, coverpool.Settings{
+		Count: 3, Sizes: [][2]int{{600, 800}},
+		RotateEveryDays: 7, RotateCount: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	a := &API{
+		Auth:      &fakeAuth{sessions: map[string]bool{}},
+		CoverPool: cfg,
+		Pool:      pool,
+		Rotator: &coverpool.Rotator{
+			Pool:   pool,
+			Config: cfg,
+		},
+	}
+	a.Mount(mux)
+	tok := setupToken(t, mux)
+	code, out := do(t, mux, "POST", "/api/cover-pool/rotate", tok, map[string]any{"limit": 50})
+	if code != http.StatusOK || out["ok"] != true {
+		t.Fatalf("rotate: %d %v", code, out)
+	}
+	for _, key := range []string{"scanned", "rotated", "skipped", "enqueued", "failed"} {
+		if _, ok := out[key]; !ok {
+			t.Fatalf("rotate response missing %s: %v", key, out)
+		}
+	}
 }
 
 func TestCoverPoolConfigUnavailable(t *testing.T) {

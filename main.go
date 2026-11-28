@@ -140,6 +140,7 @@ func main() {
 		SizeStats:  sizeStats,
 		Keywords:   coverpool.NewKeywordTracker(keywordStore, logger),
 	}
+	var poolCtx context.Context
 	var poolCancel context.CancelFunc
 	if pool != nil {
 		go func() {
@@ -150,7 +151,6 @@ func main() {
 				logger.Info("cover pool index ready")
 			}
 		}()
-		var poolCtx context.Context
 		poolCtx, poolCancel = context.WithCancel(context.Background())
 		w := poolConfig.Workers()
 		h.PoolScheduler = coverpool.NewScheduler(poolCtx, pool, w, envInt("COVER_POOL_QUEUE", 256), h, logger)
@@ -185,6 +185,14 @@ func main() {
 			Scheduler: h.PoolScheduler,
 			Generate:  h,
 		}
+		rotator := &coverpool.Rotator{
+			Pool:      pool,
+			Config:    poolConfig,
+			Scheduler: h.PoolScheduler,
+			Logger:    logger,
+		}
+		adminAPI.Rotator = rotator
+		go rotator.Run(poolCtx)
 	}
 	adminAPI.Mount(mux)
 	admin.MountUI(mux)

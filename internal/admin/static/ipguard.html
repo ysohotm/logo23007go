@@ -221,10 +221,12 @@
       } catch (e) { toast(e.message, false); }
     };
 
-    if (requireToken()) {
-      renderNav('ipguard.html');
-      load().catch(e => toast(e.message, false));
-    }
+    (async () => {
+      if (await requireAuth()) {
+        renderNav('ipguard.html');
+        load().catch(e => toast(e.message, false));
+      }
+    })();
   </script>
 </body>
 </html>

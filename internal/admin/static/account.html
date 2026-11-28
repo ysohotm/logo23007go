@@ -43,8 +43,7 @@
       if (password !== $('password2').value) { toast('两次新密码不一致', false); return; }
       $('btnSave').disabled = true;
       try {
-        const data = await api('POST', '/api/auth/change', { old_password: oldPassword, username, password });
-        setToken(data.token);
+        await api('POST', '/api/auth/change', { old_password: oldPassword, username, password });
         $('form').reset();
         await loadMe();
         toast('已保存', true);
@@ -54,10 +53,12 @@
         $('btnSave').disabled = false;
       }
     };
-    if (requireToken()) {
-      renderNav('account.html');
-      loadMe().catch(e => toast(e.message, false));
-    }
+    (async () => {
+      if (await requireAuth()) {
+        renderNav('account.html');
+        loadMe().catch(e => toast(e.message, false));
+      }
+    })();
   </script>
 </body>
 </html>

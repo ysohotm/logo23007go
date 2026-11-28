@@ -91,10 +91,12 @@
     };
     setInterval(() => { if ($('autoRefresh').checked && !document.hidden) load().catch(() => {}); }, 10000);
 
-    if (requireToken()) {
-      renderNav('blocked.html');
-      load().catch(e => toast(e.message, false));
-    }
+    (async () => {
+      if (await requireAuth()) {
+        renderNav('blocked.html');
+        load().catch(e => toast(e.message, false));
+      }
+    })();
   </script>
 </body>
 </html>

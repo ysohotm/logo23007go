@@ -1,5 +1,3 @@
-const TOKEN_KEY = 'logo23007_session_token';
-
 function $(id) { return document.getElementById(id); }
 
 function toast(msg, ok) {
@@ -16,21 +14,21 @@ function toast(msg, ok) {
   setTimeout(() => el.remove(), 3200);
 }
 
-function getToken() { return sessionStorage.getItem(TOKEN_KEY) || ''; }
-function setToken(t) { sessionStorage.setItem(TOKEN_KEY, t); }
-function clearToken() { sessionStorage.removeItem(TOKEN_KEY); }
+function getToken() { return ''; }
+function setToken(_t) {}
+function clearToken() {}
 
 async function api(method, path, body) {
   const opts = {
     method,
-    headers: { 'Content-Type': 'application/json', 'X-Session-Token': getToken() }
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' }
   };
   if (body !== undefined) opts.body = JSON.stringify(body);
   const res = await fetch(path, opts);
   let data = null;
   try { data = await res.json(); } catch (_) {}
   if (res.status === 401 && !path.startsWith('/api/auth/')) {
-    clearToken();
     location.href = './';
     throw new Error('unauthorized');
   }
@@ -67,15 +65,20 @@ function renderNav(active) {
   $('navLogout').onclick = async (e) => {
     e.preventDefault();
     try { await api('POST', '/api/auth/logout', {}); } catch (_) {}
-    clearToken();
     location.href = './';
   };
 }
 
-function requireToken() {
-  if (!getToken()) {
+async function requireAuth() {
+  try {
+    await api('GET', '/api/auth/me');
+    return true;
+  } catch (_) {
     location.href = './';
     return false;
   }
-  return true;
+}
+
+async function requireToken() {
+  return requireAuth();
 }

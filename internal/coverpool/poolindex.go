@@ -271,6 +271,13 @@ func (p *Pool) upsertRegistry(ctx context.Context, spec Spec, dir string, n int)
 
 // walkMeta visits each meta.json under root and invokes fn with parsed Spec, dir, and image count.
 func (p *Pool) walkMeta(fn func(spec Spec, dir string, n int) error) error {
+	return p.walkMetaDetail(func(spec Spec, _ Meta, dir string, n int) error {
+		return fn(spec, dir, n)
+	})
+}
+
+// walkMetaDetail is like walkMeta but also passes the decoded Meta (timestamps included).
+func (p *Pool) walkMetaDetail(fn func(spec Spec, meta Meta, dir string, n int) error) error {
 	err := filepath.WalkDir(p.root, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -295,12 +302,34 @@ func (p *Pool) walkMeta(fn func(spec Spec, dir string, n int) error) error {
 			Background: meta.Background,
 			Format:     meta.Format,
 		}
-		return fn(spec, dir, n)
+		return fn(spec, meta, dir, n)
 	})
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
 	return nil
+}
+
+// oldestImageModTime returns the oldest ModTime among images matching format in dir.
+func oldestImageModTime(dir string, format ImageFormat) (time.Time, bool) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return time.Time{}, false
+	}
+	var oldest time.Time
+	found := false
+	for _, path := range imagePaths(dir, entries, format) {
+		info, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+		mod := info.ModTime()
+		if !found || mod.Before(oldest) {
+			oldest = mod
+			found = true
+		}
+	}
+	return oldest, found
 }
 
 func countImagesInDir(dir string) int {

@@ -16,7 +16,41 @@ import (
 	"logo23007go/internal/sysmetrics"
 )
 
-const sessionTTL = 7 * 24 * time.Hour
+const (
+	sessionTTL        = 7 * 24 * time.Hour
+	sessionCookieName = "logo23007_session"
+)
+
+func sessionSecure(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
+func setSessionCookie(w http.ResponseWriter, r *http.Request, token string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    token,
+		Path:     "/",
+		MaxAge:   int(sessionTTL.Seconds()),
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   sessionSecure(r),
+	})
+}
+
+func clearSessionCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   sessionSecure(r),
+	})
+}
 
 // CoverKeywordRegistry stores manually added cover keywords for listing/status.
 type CoverKeywordRegistry interface {
@@ -30,6 +64,7 @@ type API struct {
 	Guard     *ipguard.Guard
 	CoverPool *coverpool.Config
 	Prewarm   *coverpool.Prewarmer
+	Rotator   *coverpool.Rotator
 	Keywords  CoverKeywordRegistry
 	Pool      *coverpool.Pool
 	Sys       *sysmetrics.Collector
@@ -63,6 +98,11 @@ func sessionToken(r *http.Request) string {
 	auth := r.Header.Get("Authorization")
 	if strings.HasPrefix(strings.ToLower(auth), "bearer ") {
 		return strings.TrimSpace(auth[7:])
+	}
+	if c, err := r.Cookie(sessionCookieName); err == nil {
+		if k := strings.TrimSpace(c.Value); k != "" {
+			return k
+		}
 	}
 	return ""
 }
@@ -99,6 +139,7 @@ func (a *API) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/cover-pool/size-stats/reset", a.handleCoverSizeStatsReset)
 	mux.HandleFunc("POST /api/cover-pool/sync-registry", a.handleCoverPoolSyncRegistry)
 	mux.HandleFunc("POST /api/cover-pool/cleanup-backgrounds", a.handleCoverPoolCleanupBackgrounds)
+	mux.HandleFunc("POST /api/cover-pool/rotate", a.handleCoverPoolRotate)
 	mux.HandleFunc("GET /api/system/stats", a.handleSystemStats)
 	mux.HandleFunc("GET /api/ipguard/stats", a.handleStats)
 	mux.HandleFunc("POST /api/ipguard/stats/reset", a.handleStatsReset)
@@ -131,6 +172,7 @@ func (a *API) issueSession(w http.ResponseWriter, r *http.Request, username stri
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	setSessionCookie(w, r, tok)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "token": tok, "username": strings.TrimSpace(username)})
 }
 
@@ -172,6 +214,7 @@ func (a *API) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
 	if tok := sessionToken(r); tok != "" {
 		_ = a.Auth.DeleteSession(r.Context(), tok)
 	}
+	clearSessionCookie(w, r)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -274,9 +317,11 @@ func (a *API) handlePutCoverPool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Count   int      `json:"count"`
-		Sizes   []string `json:"sizes"`
-		Workers int      `json:"workers"`
+		Count           int      `json:"count"`
+		Sizes           []string `json:"sizes"`
+		Workers         int      `json:"workers"`
+		RotateEveryDays int      `json:"rotate_every_days"`
+		RotateCount     int      `json:"rotate_count"`
 	}
 	if !decodeJSON(w, r, &body) {
 		return
@@ -289,12 +334,26 @@ func (a *API) handlePutCoverPool(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "后台生成并发需为 1-32 的整数")
 		return
 	}
+	if body.RotateEveryDays < 0 || body.RotateEveryDays > 3650 {
+		writeErr(w, http.StatusBadRequest, "轮换间隔天数需为 0-3650 的整数")
+		return
+	}
+	if body.RotateCount < 0 || body.RotateCount > 100 {
+		writeErr(w, http.StatusBadRequest, "每次轮换张数需为 0-100 的整数")
+		return
+	}
 	sizes, err := parseCoverPoolSizeList(body.Sizes)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := a.CoverPool.Set(r.Context(), coverpool.Settings{Count: body.Count, Sizes: sizes, Workers: body.Workers}); err != nil {
+	if err := a.CoverPool.Set(r.Context(), coverpool.Settings{
+		Count:           body.Count,
+		Sizes:           sizes,
+		Workers:         body.Workers,
+		RotateEveryDays: body.RotateEveryDays,
+		RotateCount:     body.RotateCount,
+	}); err != nil {
 		if strings.Contains(err.Error(), "outside") || strings.Contains(err.Error(), "invalid") || strings.Contains(err.Error(), "too many") || strings.Contains(err.Error(), "too large") {
 			writeErr(w, http.StatusBadRequest, "关键词图片池配置无效: "+err.Error())
 			return
@@ -328,11 +387,50 @@ func writeCoverPoolConfig(w http.ResponseWriter, settings coverpool.Settings) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true,
 		"config": map[string]any{
-			"count":   settings.Count,
-			"sizes":   sizes,
-			"workers": settings.Workers,
+			"count":             settings.Count,
+			"sizes":             sizes,
+			"workers":           settings.Workers,
+			"rotate_every_days": settings.RotateEveryDays,
+			"rotate_count":      settings.RotateCount,
 		},
 	})
+}
+
+func (a *API) handleCoverPoolRotate(w http.ResponseWriter, r *http.Request) {
+	if !a.authed(w, r) {
+		return
+	}
+	if a.Rotator == nil {
+		writeErr(w, http.StatusServiceUnavailable, "封面池轮换暂不可用")
+		return
+	}
+	var body struct {
+		Limit int `json:"limit"`
+	}
+	if r.ContentLength != 0 && r.Body != nil && r.Body != http.NoBody {
+		if !decodeJSON(w, r, &body) {
+			return
+		}
+	}
+	lim := body.Limit
+	old := a.Rotator.Limit
+	if lim > 0 {
+		a.Rotator.Limit = lim
+	}
+	defer func() { a.Rotator.Limit = old }()
+	result := a.Rotator.Tick(r.Context())
+	resp := map[string]any{
+		"ok":       true,
+		"scanned":  result.Scanned,
+		"rotated":  result.Rotated,
+		"skipped":  result.Skipped,
+		"enqueued": result.Enqueued,
+		"failed":   result.Failed,
+	}
+	if len(result.Errors) > 0 {
+		resp["errors"] = result.Errors
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (a *API) handleGenerateCoverPool(w http.ResponseWriter, r *http.Request) {

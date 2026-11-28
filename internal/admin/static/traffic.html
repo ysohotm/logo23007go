@@ -397,10 +397,12 @@
     $('btnRefresh').onclick = () => load().catch(e => toast(e.message, false));
     setInterval(() => { if ($('autoRefresh').checked && !document.hidden) load().catch(() => {}); }, 10000);
 
-    if (requireToken()) {
-      renderNav('traffic.html');
-      load().catch(e => toast(e.message, false));
-    }
+    (async () => {
+      if (await requireAuth()) {
+        renderNav('traffic.html');
+        load().catch(e => toast(e.message, false));
+      }
+    })();
   </script>
 </body>
 </html>

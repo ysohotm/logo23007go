@@ -19,9 +19,11 @@ type Store interface {
 
 // Settings is the admin-editable cover-pool configuration.
 type Settings struct {
-	Count   int      `json:"count"`
-	Sizes   [][2]int `json:"sizes"`
-	Workers int      `json:"workers"` // background fill concurrency
+	Count           int      `json:"count"`
+	Sizes           [][2]int `json:"sizes"`
+	Workers         int      `json:"workers"`            // background fill concurrency
+	RotateEveryDays int      `json:"rotate_every_days"`  // 0=off
+	RotateCount     int      `json:"rotate_count"`       // 0=off; clamped to <= Count
 }
 
 const (
@@ -29,6 +31,7 @@ const (
 	defaultWorkers = 2
 	maxSizes       = 32
 	maxWorkers     = 32
+	maxRotateDays  = 3650
 )
 
 // DefaultSizes are pooled when Mongo has no sizes yet. Matches the app
@@ -37,7 +40,7 @@ func DefaultSizes() [][2]int {
 	return [][2]int{{600, 800}}
 }
 
-// DefaultSettings returns count=10, workers=2 and DefaultSizes.
+// DefaultSettings returns count=10, workers=2, rotate off, and DefaultSizes.
 func DefaultSettings() Settings {
 	return Settings{Count: defaultCount, Sizes: DefaultSizes(), Workers: defaultWorkers}
 }
@@ -48,6 +51,9 @@ type Config struct {
 	logger  *slog.Logger
 	count   atomic.Int64
 	workers atomic.Int64
+
+	rotateEveryDays atomic.Int64
+	rotateCount     atomic.Int64
 
 	mu    sync.RWMutex
 	sizes [][2]int
@@ -60,6 +66,7 @@ func NewConfig(store Store, logger *slog.Logger) *Config {
 	cfg := &Config{store: store, logger: logger, sizes: DefaultSizes()}
 	cfg.count.Store(defaultCount)
 	cfg.workers.Store(defaultWorkers)
+	// rotateEveryDays / rotateCount default to 0 (off)
 	return cfg
 }
 
@@ -87,6 +94,30 @@ func (c *Config) Workers() int {
 	return int(workers)
 }
 
+// RotateEveryDays returns days between rotates; 0 means off. Nil-safe → 0.
+func (c *Config) RotateEveryDays() int {
+	if c == nil {
+		return 0
+	}
+	v := c.rotateEveryDays.Load()
+	if v < 0 {
+		return 0
+	}
+	return int(v)
+}
+
+// RotateCount returns how many covers to rotate; 0 means off. Nil-safe → 0.
+func (c *Config) RotateCount() int {
+	if c == nil {
+		return 0
+	}
+	v := c.rotateCount.Load()
+	if v < 0 {
+		return 0
+	}
+	return int(v)
+}
+
 // Sizes returns a copy of the allowlisted pool sizes.
 func (c *Config) Sizes() [][2]int {
 	if c == nil {
@@ -112,9 +143,15 @@ func (c *Config) Allows(width, height int) bool {
 	return false
 }
 
-// Snapshot returns the current count, sizes and workers for admin APIs.
+// Snapshot returns the current count, sizes, workers and rotate settings for admin APIs.
 func (c *Config) Snapshot() Settings {
-	return Settings{Count: c.Count(), Sizes: c.Sizes(), Workers: c.Workers()}
+	return Settings{
+		Count:           c.Count(),
+		Sizes:           c.Sizes(),
+		Workers:         c.Workers(),
+		RotateEveryDays: c.RotateEveryDays(),
+		RotateCount:     c.RotateCount(),
+	}
 }
 
 // Set validates and persists settings before making them visible locally.
@@ -185,13 +222,16 @@ func (c *Config) refresh(ctx context.Context) {
 func (c *Config) apply(settings Settings) {
 	c.count.Store(int64(settings.Count))
 	c.workers.Store(int64(settings.Workers))
+	c.rotateEveryDays.Store(int64(settings.RotateEveryDays))
+	c.rotateCount.Store(int64(settings.RotateCount))
 	c.mu.Lock()
 	c.sizes = append([][2]int(nil), settings.Sizes...)
 	c.mu.Unlock()
 }
 
-// NormalizeSettings validates count/sizes/workers and fills defaults for empty sizes.
+// NormalizeSettings validates count/sizes/workers/rotate and fills defaults for empty sizes.
 // Workers 0 becomes the default (2); other values must be in 1..32.
+// RotateEveryDays must be 0..3650; RotateCount is clamped to Count (0=off).
 func NormalizeSettings(settings Settings) (Settings, error) {
 	if settings.Count < 1 || settings.Count > 100 {
 		return Settings{}, fmt.Errorf("coverpool: count %d outside 1..100", settings.Count)
@@ -203,6 +243,16 @@ func NormalizeSettings(settings Settings) (Settings, error) {
 	if workers < 1 || workers > maxWorkers {
 		return Settings{}, fmt.Errorf("coverpool: workers %d outside 1..32", settings.Workers)
 	}
+	if settings.RotateEveryDays < 0 || settings.RotateEveryDays > maxRotateDays {
+		return Settings{}, fmt.Errorf("coverpool: rotate_every_days %d outside 0..%d", settings.RotateEveryDays, maxRotateDays)
+	}
+	rotateCount := settings.RotateCount
+	if rotateCount < 0 {
+		return Settings{}, fmt.Errorf("coverpool: rotate_count %d outside 0..%d", rotateCount, settings.Count)
+	}
+	if rotateCount > settings.Count {
+		rotateCount = settings.Count
+	}
 	sizes, err := normalizeSizes(settings.Sizes)
 	if err != nil {
 		return Settings{}, err
@@ -210,7 +260,13 @@ func NormalizeSettings(settings Settings) (Settings, error) {
 	if len(sizes) == 0 {
 		sizes = DefaultSizes()
 	}
-	return Settings{Count: settings.Count, Sizes: sizes, Workers: workers}, nil
+	return Settings{
+		Count:           settings.Count,
+		Sizes:           sizes,
+		Workers:         workers,
+		RotateEveryDays: settings.RotateEveryDays,
+		RotateCount:     rotateCount,
+	}, nil
 }
 
 func normalizeSizes(in [][2]int) ([][2]int, error) {
