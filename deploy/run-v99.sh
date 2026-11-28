@@ -24,15 +24,25 @@ mkdir -p \
   "$HOST_DATA/cache/covers" \
   "$HOST_DATA/cache/bg"
 
+DBCONN_FILE="${DBCONN_FILE:-$HOST_DATA/.dbconn}"
+
 if [[ -z "${DBCONN:-}" ]]; then
   if docker inspect "$NAME" >/dev/null 2>&1; then
     DBCONN="$(docker inspect "$NAME" --format '{{range .Config.Env}}{{println .}}{{end}}' | awk -F= '/^DBCONN=/{sub(/^DBCONN=/,""); print}')"
   fi
 fi
+if [[ -z "${DBCONN:-}" && -f "$DBCONN_FILE" ]]; then
+  # shellcheck disable=SC1090
+  DBCONN="$(<"$DBCONN_FILE")"
+fi
 if [[ -z "${DBCONN:-}" ]]; then
-  echo "请设置 DBCONN，或先有一个可继承环境的旧容器 $NAME" >&2
+  echo "请设置 DBCONN，或先有一个可继承环境的旧容器 $NAME，或写入 $DBCONN_FILE" >&2
   exit 1
 fi
+# Persist so the next deploy still works after the container is removed.
+umask 077
+printf '%s\n' "$DBCONN" >"$DBCONN_FILE"
+chmod 600 "$DBCONN_FILE" 2>/dev/null || true
 
 ROLLBACK_TAG="rollback-$(TZ=Asia/Shanghai date +%Y%m%d)"
 if docker image inspect "$IMAGE" >/dev/null 2>&1; then
